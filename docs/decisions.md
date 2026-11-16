@@ -339,7 +339,7 @@ It is refused before leasing when no lease could make it valid, so no boot is wa
 Other tools take the device in arguments whose place depends on the subcommand, so they get `{udid}` and `{name}` placeholders and `SIMCTLHOUSE_UDID`, `SIMCTLHOUSE_DEVICE_NAME` and `SIMCTLHOUSE_LEASE_ID` instead of guessing (D38 extends this).
 With `--count`, the singular variables are not set and `{udid}` and `{name}` are refused, so a script written for one device fails loudly instead of using the first.
 
-`run` is for one self-contained command, typically an end-to-end test run, and the docs and skill present it only that way.
+`run` is for one self-contained command, typically an end-to-end test run, and the docs and skill present it only that way; since D39 it is also the default for each run of an edit-and-test loop.
 Steps that must share a device, such as build, install, launch and screenshot, hold it across commands with `acquire` and `release`, like a lock: two `run`s may get two devices, and chaining the steps into one `run` with `sh -c` hides that they depend on one device.
 
 Without `--holder` or `SIMCTLHOUSE_HOLDER`, `acquire` and `run` label the lease with the agent and directory, such as `claude in app`, and `run` adds the command.
@@ -394,3 +394,16 @@ Every variable `run` owns is cleared before it sets its own, so a `run` inside a
 0.3 renamed `SIMCTLHOUSE_DEVICE` to `SIMCTLHOUSE_DEVICE_NAME` and `SIMCTLHOUSE_DEVICES` to `SIMCTLHOUSE_DEVICE_NAMES`, and the lists became comma-separated instead of space-separated.
 `DEVICE` alone read like the device's identifier, and a comma-separated list splits the same way in every language, where a space-separated one relies on shell word splitting.
 Trade-off: scripts written for 0.2 that read the old names or split on spaces break; the old names were not kept as aliases, since two names for one value stay forever.
+
+## D39. A lease covers one work item, not a session
+
+The skill tells agents to lease a device for one work item, such as a test run, a round of screenshots or one attempt to reproduce a bug, and to release it when that item ends, even when they expect more device work later in the same session.
+They release before going back to reading or editing code, before asking the user anything and before ending their turn; an edit-and-test loop runs each test as its own `run`.
+The skill used to say "one lease per task", meant to stop agents acquiring once per command within a sequence, and agents read the task as the whole session: `history` showed a device held for 1h 14m across renewals while its agent worked on code, and other agents created and booted new devices meanwhile.
+Releasing costs almost nothing, since a released device stays booted with the app installed (D8) and `acquire <name>` or `run <name>` gets it back while it is free, so the guidance says so instead of leaving agents to hold on for fear of a boot.
+
+Scripts that need a device for several steps take the UDID as an argument and run under `run`, instead of calling `acquire` and releasing in a `trap`.
+`history` showed two devices left leased by a script whose process was gone: a harness SIGKILL skips the trap, so the device stays leased until the lease runs out, where under `run` the daemon reclaims it within a minute (D33).
+
+Shortening the 30-minute lease (D9) to force releases was rejected: it would cost more `renew`s in genuinely long work items, and an agent holding a device on purpose would just renew it.
+Trade-off: an agent that comes back to the device after an edit may find it taken and get another one, which then installs the app again, and boots first if no free device is booted.

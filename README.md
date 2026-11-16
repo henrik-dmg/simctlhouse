@@ -57,6 +57,13 @@ xcrun simctl io "$UDID" screenshot onboarding.png
 simctlhouse release "$UDID"                                      # back to the pool, still booted for the next agent
 ```
 
+### Hold it for one piece of work only
+
+A lease covers one piece of work, such as a test run or a round of screenshots, and ends with it, even when the same agent needs a simulator again a few minutes later.
+An agent that keeps its device while it edits code or waits for you makes every other agent create and boot a new one.
+The skill has agents release before they go back to code, ask you something or end their turn, and run each test of an edit-and-test loop as its own `run`.
+Giving a device back costs almost nothing: it stays booted with the app installed, and `run <name>` or `acquire <name>` gets it back if it is still free.
+
 ### Who holds what
 
 `simctlhouse list` shows every device, who holds it, and what happens to it next (UDIDs shortened here):

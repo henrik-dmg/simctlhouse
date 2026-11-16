@@ -1,17 +1,35 @@
 ---
 name: simctlhouse
-description: Get an exclusive iOS simulator (iPhone or iPad) for building, testing or running an app, and give it back when done. Use whenever you are about to run `xcodebuild test`/`build` or `xcrun simctl` against a simulator, need a simulator destination or UDID, or choose a simulator, so parallel agents never share or fight over one. Use it instead of picking a simulator from `xcrun simctl list`, using "booted", or using `-destination 'name=iPhone ...'`.
+description: Get an exclusive iOS simulator (iPhone or iPad) for building, testing or running an app, and give it back as soon as that piece of work finishes, not at the end of the session. Use whenever you are about to run `xcodebuild test`/`build` or `xcrun simctl` against a simulator, need a simulator destination or UDID, or choose a simulator, so parallel agents never share or fight over one. Use it instead of picking a simulator from `xcrun simctl list`, using "booted", or using `-destination 'name=iPhone ...'`.
 ---
 
 # simctlhouse: exclusive simulators for agents
 
 Other agents use this machine's simulators at the same time.
 A simulator you pick yourself (by name, `booted`, or from `simctl list`) collides with theirs and fails at random.
-Always get your device from simctlhouse, in one of two ways:
+Always get your device from simctlhouse, and hold it only while something runs on it.
 
-- One command does the whole job, such as an end-to-end `xcodebuild test`: wrap it in `simctlhouse run`.
-- Several steps must happen on the same device, such as install, launch and screenshot: hold it with `acquire` and `release`.
+## One lease per work item
+
+A work item is one uninterrupted job on a device: a test run, a build, a round of screenshots, one attempt to reproduce a bug.
+A lease covers exactly one work item and ends with it, even when you expect more device work later in the same session.
+A device you keep while you read code, edit, think or wait for the user sits idle, and every other agent has to create and boot a new one instead.
+
+- Default to `simctlhouse run`: it leases a device for one command and gives it back when the command exits, so nothing is held between work items.
+- Use `acquire` and `release` only when several commands must run on the same device in a row, such as install, launch and screenshot.
   Two `run`s may get two different devices, so never split such steps across `run`s, and do not chain them into one `run` with `sh -c`.
+  Release right after the last of those steps.
+- Iterating on a fix (edit, test, edit, test) is one work item per test run: use a new `simctlhouse run` each time.
+  Do not acquire once and keep the device across your edits.
+- Release before you go back to reading or editing code, before you ask the user anything, and before you end your turn.
+  Never end a turn while holding a lease.
+- A script that needs a device for several steps takes the UDID as an argument and runs under `run`: `simctlhouse run -- ./scripts/screenshots.sh {udid}`.
+  Do not have the script call `acquire` and release in a `trap`: agent harnesses kill timed-out commands with SIGKILL, which skips the trap and leaves the device leased and unused for up to 30 minutes, while under `run` it is reclaimed within a minute.
+
+Giving a device back costs almost nothing.
+A released device stays booted and keeps your installed app, and the next `run` or `acquire` gets a free booted device at once.
+To get the same device back, name it: `simctlhouse run <name> -- ...` or `simctlhouse acquire <name> --holder "..."`.
+If another agent took it meanwhile (`acquire` exits with 5, `run` with 125), take any free one instead.
 
 ## One command: `simctlhouse run`
 
@@ -61,7 +79,7 @@ The lease lasts as long as the command, so there is nothing to renew.
    xcrun simctl launch "$UDID" com.example.app
    ```
 
-3. Release it as soon as you are done, also after failures:
+3. Release it right after the last step, also after failures, before you do anything else:
 
    ```sh
    simctlhouse release "$UDID"
@@ -70,10 +88,11 @@ The lease lasts as long as the command, so there is nothing to renew.
 ## Rules
 
 - Always pass `--holder` with a label that says who you are and what you are doing; `list` and `history` show it to whoever investigates later.
-- One lease per task: reuse your UDID for every build and test in it instead of acquiring again for each command.
+- Within one work item, use the same UDID for every command instead of acquiring again for each.
 - A lease from `acquire` expires 30 minutes (or `$SIMCTLHOUSE_LEASE_SECONDS`) after `acquire` returns or the last `renew`; `acquire` and `renew` print how long you have (`expiresAt` in `--json`).
   An expired device is re-created under a new name and handed to someone else, even in the middle of your build; its old name and UDID then fail with exit code 3.
-  If your work may run longer, run `simctlhouse renew "$UDID"` before each long step, at the latest when two thirds of the lease have passed.
+  If one work item may run longer, run `simctlhouse renew "$UDID"` before each long step, at the latest when two thirds of the lease have passed.
+  Never renew to keep a device between work items; release it instead.
 - Released devices stay booted for the next agent and are not erased.
   For a pristine device, release it, run `simctlhouse erase <name>`, and acquire again; or uninstall your app first.
 - Never `xcrun simctl shutdown/erase/delete` a device yourself, and never touch simulators simctlhouse did not give you.

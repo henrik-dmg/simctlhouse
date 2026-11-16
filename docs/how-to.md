@@ -68,7 +68,8 @@ The skill only teaches agents the workflow, and it comes in the [Agent Skills](h
   Other agents share this machine's simulators, so never pick one yourself (`booted`, a device name, or one from `xcrun simctl list`).
   Run a single test or build command as `simctlhouse run --holder "<task>" -- xcodebuild test -scheme App`, without a `-destination`: it leases a simulator, adds the destination, and releases the simulator when the command exits.
   Add `--skip-boot` when the command needs no running simulator, such as `xcodebuild build`.
-  For several steps that need the same simulator, run `UDID=$(simctlhouse acquire --holder "<task>")`, use the UDID everywhere, `simctlhouse renew "$UDID"` during long work, and `simctlhouse release "$UDID"` when done, also after failures.
+  For several steps that need the same simulator, run `UDID=$(simctlhouse acquire --holder "<task>")`, use the UDID everywhere, and `simctlhouse release "$UDID"` right after the last step, also after failures.
+  Hold a simulator for one piece of work (a test run, a round of screenshots) and release it before going back to code, asking the user anything or ending the turn, even if you will need one again soon; `simctlhouse run <name> -- ...` gets the same one back if it is still free.
   `simctlhouse --help` has the details.
   ```
 
@@ -117,6 +118,7 @@ The command runs in simctlhouse's process group with its stdin, stdout and stder
 
 `run` is for one self-contained command, such as an end-to-end test run: the device goes back to the pool as soon as it exits, and the next `run` may get another one.
 Steps that must happen on the same device, such as installing an app, launching it, taking a screenshot and trying again, hold it across commands like a lock: lease it with `acquire` (next section).
+Either way, a lease covers one piece of work and ends with it; an agent iterating on a fix runs each test as its own `run` instead of holding one device across its edits (D39).
 
 ## Use a device from a script or agent
 
@@ -125,6 +127,9 @@ UDID=$(simctlhouse acquire --holder "$TASK_ID")
 xcodebuild test -scheme App -destination "id=$UDID"
 simctlhouse release "$UDID"
 ```
+
+A script that an agent or CI may kill on a timeout should take the UDID as an argument and run under `run` (`simctlhouse run -- ./scripts/screenshots.sh {udid}`) rather than call `acquire` and release in a `trap`.
+A SIGKILL skips the trap and leaves the device leased until the lease runs out; under `run`, the daemon reclaims it within a minute.
 
 Use `--json` to also get the lease ID, and pass it to `release` / `renew` for retry-safe scripts:
 
