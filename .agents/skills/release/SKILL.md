@@ -127,7 +127,7 @@ Push and tag `<built>` (from `dist/release-X.Y.Z.commit`), never `main` or `HEAD
 
 ```sh
 built="$(cat dist/release-X.Y.Z.commit)"
-git push origin "$built:refs/heads/main"
+git push origin "${built}:refs/heads/main"   # braces: zsh reads $built:r as a modifier
 git tag -a vX.Y.Z "$built" -m "simctlhouse X.Y.Z"
 git push origin vX.Y.Z
 gh release create vX.Y.Z dist/simctlhouse-X.Y.Z-macos.tar.gz \
