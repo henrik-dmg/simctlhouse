@@ -12,7 +12,8 @@ struct SimctlHouse: ParsableCommand {
             or wraps a command in `run`, which does all three: `simctlhouse run -- xcodebuild test -scheme App`.
             Leases expire after 30 minutes (extend with `renew`); expired devices are re-created under a new name and returned to the pool.
             Free devices shut down after 15 minutes of inactivity. simctlhouse only touches devices it created.
-            Both timeouts can be changed with environment variables, see below; an idle time of 0 shuts free devices down on the next command.
+            Both timeouts can be changed in <home>/config.json or with environment variables, see below and `simctlhouse config`;
+            an idle time of 0 shuts free devices down on the next command.
             `acquire`, `release`, `renew` and `run` start a background daemon that enforces both on time; it exits once the pool is idle.
             Wherever a command takes a device, its name and its UDID both work.
 
@@ -25,11 +26,12 @@ struct SimctlHouse: ParsableCommand {
               SIMCTLHOUSE_HOLDER         default --holder label (otherwise: the agent and directory)
               SIMCTLHOUSE_HOME           state directory (default ~/.simctlhouse)
               SIMCTLHOUSE_DAEMON         0 to never start the daemon (default 1)
+            Each overrides the same setting in <home>/config.json.
             """,
         version: "0.3.1",
         subcommands: [
             Acquire.self, Release.self, Renew.self, Run.self, List.self, UDID.self, History.self, Create.self, Delete.self, Erase.self, GC.self,
-            DaemonCommand.self, Home.self, Skill.self, UninstallCommand.self, Version.self,
+            DaemonCommand.self, Config.self, Home.self, Skill.self, UninstallCommand.self, Version.self,
         ]
     )
 
@@ -85,6 +87,9 @@ enum Runtime {
         Pool(paths: HousePaths.fromEnvironment(), config: try PoolConfig.fromEnvironment(), log: log)
     }
 
+    /// Settings come from the environment over `<home>/config.json`; reading both fails a command before it changes anything.
+    static func config() throws -> PoolConfig { try PoolConfig.fromEnvironment() }
+
     /// Runs a command body, mapping simctlhouse errors to a stderr message and a distinct exit code.
     static func run(_ body: (Pool) throws -> Void) throws {
         try run { try body(pool()) }
@@ -93,7 +98,8 @@ enum Runtime {
     /// Runs a command that leaves something for the daemon to watch, then makes sure a daemon runs.
     static func runStartingDaemon(_ body: (Pool) throws -> Void) throws {
         try run {
-            try DaemonLauncher(paths: HousePaths.fromEnvironment()).ensureRunning(after: { try body(pool()) }, warn: note)
+            let pool = try pool()
+            try DaemonLauncher(paths: pool.store.paths).ensureRunning(after: { try body(pool) }, enabled: pool.config.startsDaemon, warn: note)
         }
     }
 
@@ -279,8 +285,8 @@ struct Run: ParsableCommand {
     func run() throws {
         let outcome: RunOutcome
         do {
-            let daemonEnabled = try DaemonLauncher.isEnabled()
             let pool = try Runtime.pool(log: Self.note)
+            let daemonEnabled = pool.config.startsDaemon
             let launcher = DaemonLauncher(paths: pool.store.paths)
             let runner = Runner(pool: pool, log: Self.note) {
                 guard daemonEnabled else { return }
@@ -380,11 +386,43 @@ struct Version: ParsableCommand {
     }
 }
 
+struct Config: ParsableCommand {
+    static let configuration = CommandConfiguration(
+        abstract: "Show the settings in effect and where each comes from.",
+        discussion: """
+            Settings live in <home>/config.json (~/.simctlhouse/config.json, or under $SIMCTLHOUSE_HOME); an environment variable \
+            overrides the same setting, and anything unset keeps its default. Every key is optional:
+
+              {
+                "leaseSeconds": 1800,
+                "idleSeconds": 900,
+                "daemon": true
+              }
+
+            An unknown key or a malformed value fails every command with exit code 64, so a typo never goes unnoticed. \
+            Run this command after editing the file to check it.
+            """
+    )
+
+    @OptionGroup var output: OutputOptions
+
+    func run() throws {
+        try Runtime.run {
+            let report = try ConfigReport.fromEnvironment()
+            if output.json {
+                try Runtime.printJSON(report)
+                return
+            }
+            print(Format.config(report))
+        }
+    }
+}
+
 struct Home: ParsableCommand {
     static let configuration = CommandConfiguration(
         abstract: "Print the state directory, or open it in Finder.",
         discussion: """
-            It holds state.json, the daemon's log and the locks: ~/.simctlhouse, or $SIMCTLHOUSE_HOME.
+            It holds config.json, state.json, the daemon's log and the locks: ~/.simctlhouse, or $SIMCTLHOUSE_HOME.
             For scripts: `tail "$(simctlhouse home)/daemon.log"`.
             """
     )
@@ -776,7 +814,8 @@ struct DaemonCommand: ParsableCommand {
             `acquire`, `release`, `renew` and `run` start the daemon when none runs, or when one of another simctlhouse build runs.
             It reclaims expired leases and shuts down idle free devices as they come due, and exits once nothing is leased, booted or in progress.
             Without it, every command still does the same work first.
-            It logs to <home>/daemon.log. Set SIMCTLHOUSE_DAEMON=0 to never start it.
+            It logs to <home>/daemon.log. Set SIMCTLHOUSE_DAEMON=0, or "daemon": false in <home>/config.json, to never start it.
+            It reads config.json again on every wake, so an edit applies without a restart; the environment it was started with still wins.
             """,
         subcommands: [Start.self, Serve.self, Status.self, Stop.self]
     )
@@ -859,7 +898,7 @@ struct DaemonCommand: ParsableCommand {
                 // Hold no directory busy, such as the one of the command that started it.
                 chdir("/")
                 let pool = try Runtime.pool { message in Runtime.note("\(Format.timestamp(Date()))  \(message)") }
-                let daemon = Daemon(pool: pool, version: Runtime.version, signals: signals)
+                let daemon = Daemon(pool: pool, version: Runtime.version, signals: signals, reloadConfig: { try Runtime.config() })
                 let outcome = try daemon.serve(takeOver: takeOver, keepAlive: TimeInterval(keepAlive)) {
                     if logFile { try DaemonLauncher.redirectOutput(to: pool.store.paths) }
                 }
@@ -883,11 +922,11 @@ struct DaemonCommand: ParsableCommand {
                     return
                 }
                 guard status.running else {
-                    let enabled = (try? DaemonLauncher.isEnabled()) ?? true
+                    let enabled = (try? Runtime.config().startsDaemon) ?? true
                     Runtime.note(
                         enabled
                             ? "Not running. The next acquire, release, renew or run starts it."
-                            : "Not running. SIMCTLHOUSE_DAEMON=0 keeps commands from starting it.")
+                            : "Not running. SIMCTLHOUSE_DAEMON=0 or \"daemon\": false in config.json keeps commands from starting it.")
                     return
                 }
                 guard let daemon = status.daemon else {
@@ -1065,6 +1104,28 @@ enum Format {
         ByteCountFormatter.string(fromByteCount: count, countStyle: .file)
     }
 
+    /// One row per setting; the source is the variable's name when the environment set it.
+    static func config(_ report: ConfigReport) -> String {
+        let rows =
+            [["SETTING", "FROM", "VALUE"]]
+            + report.settings.map { entry in
+                let source =
+                    switch entry.source {
+                    case .default: "default"
+                    case .file: "config.json"
+                    case .environment: entry.variable ?? "environment"
+                    }
+                return [entry.key, source, "\(entry.value)"]
+            }
+        let widths = (0..<2).map { column in rows.map { $0[column].count }.max() ?? 0 }
+        let table = rows.map { row in
+            row[0].padding(toLength: widths[0], withPad: " ", startingAt: 0) + "  " + row[1].padding(toLength: widths[1], withPad: " ", startingAt: 0)
+                + "  " + row[2]
+        }
+        let file = "File: \(path(report.file))" + (report.fileExists ? "" : " (not there; every setting has its default)")
+        return ([file, ""] + table).joined(separator: "\n")
+    }
+
     static func uninstallPlan(_ plan: UninstallPlan) -> String {
         var lines = ["This removes from this Mac:"]
         if !plan.devices.isEmpty {
@@ -1076,7 +1137,10 @@ enum Format {
         }
         if plan.daemonRunning { lines.append("  the background daemon, which is running") }
         for link in plan.links { lines.append("  the skill link \(path(link.path))") }
-        if plan.homeExists { lines.append("  \(path(plan.home.path)): the pool's state, lease history and daemon log") }
+        if plan.homeExists {
+            let config = plan.configExists ? ", and your config.json" : ""
+            lines.append("  \(path(plan.home.path)): the pool's state, lease history and daemon log\(config)")
+        }
         if lines.count == 1 { lines.append("  nothing; simctlhouse left nothing behind") }
         lines.append("Your own simulators and the simctlhouse binary stay.")
         return lines.joined(separator: "\n")

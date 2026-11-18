@@ -238,7 +238,8 @@ import Testing
     }
 
     @Test func configuredTimeoutsApply() throws {
-        let config = try PoolConfig.fromEnvironment(["SIMCTLHOUSE_LEASE_SECONDS": "120", "SIMCTLHOUSE_IDLE_SECONDS": "0"])
+        let config = try PoolConfig.load(
+            environment: ["SIMCTLHOUSE_LEASE_SECONDS": "120", "SIMCTLHOUSE_IDLE_SECONDS": "0"], file: h.root.appending(path: "config.json"))
         let pool = h.pool(config: config)
         let device = try pool.acquire(AcquireRequest())
         #expect(device.expiresAt == h.clock.now.addingTimeInterval(120))

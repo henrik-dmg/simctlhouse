@@ -202,17 +202,26 @@ public struct Daemon: Sendable {
     let build: DaemonBuild
     let signals: DaemonSignals
     let sleep: @Sendable (TimeInterval) -> Void
+    /// Reads the configuration again, so an edited `config.json` applies without a restart (D40).
+    let reloadConfig: (@Sendable () throws -> PoolConfig)?
 
-    public init(pool: Pool, version: String, build: DaemonBuild = .current(), signals: DaemonSignals = DaemonSignals()) {
-        self.init(pool: pool, version: version, build: build, signals: signals, sleep: { signals.sleep($0) })
+    public init(
+        pool: Pool, version: String, build: DaemonBuild = .current(), signals: DaemonSignals = DaemonSignals(),
+        reloadConfig: (@Sendable () throws -> PoolConfig)? = nil
+    ) {
+        self.init(pool: pool, version: version, build: build, signals: signals, sleep: { signals.sleep($0) }, reloadConfig: reloadConfig)
     }
 
-    init(pool: Pool, version: String, build: DaemonBuild, signals: DaemonSignals, sleep: @escaping @Sendable (TimeInterval) -> Void) {
+    init(
+        pool: Pool, version: String, build: DaemonBuild, signals: DaemonSignals, sleep: @escaping @Sendable (TimeInterval) -> Void,
+        reloadConfig: (@Sendable () throws -> PoolConfig)? = nil
+    ) {
         self.pool = pool
         self.version = version
         self.build = build
         self.signals = signals
         self.sleep = sleep
+        self.reloadConfig = reloadConfig
     }
 
     /// Runs until nothing is left to watch or a stop is requested. `onLocked` runs once this process is the daemon,
@@ -220,6 +229,7 @@ public struct Daemon: Sendable {
     /// With `takeOver`, it waits for a running daemon to exit instead of leaving, as the replacement for another build.
     /// With a `keepAlive`, it runs at least that long from its start, for testing and watching it; work still keeps it longer.
     public func serve(takeOver: Bool = false, keepAlive: TimeInterval = 0, onLocked: () throws -> Void = {}) throws -> Outcome {
+        var pool = self.pool
         let paths = pool.store.paths
         let startedAt = pool.now()
         let record = DaemonRecord(
@@ -238,7 +248,21 @@ public struct Daemon: Sendable {
         var lastCollection: Date?
         var nextCollection = pool.now()
         var waitingOutKeepAlive = false
+        var configProblem: String?
         while !signals.isStopRequested {
+            if let reloadConfig {
+                // A broken file must not stop the daemon, or deadlines go unenforced until someone notices; it keeps the last good one.
+                do {
+                    let fresh = try reloadConfig()
+                    if configProblem != nil || fresh != pool.config { pool.log("The configuration changed; using it from now on.") }
+                    configProblem = nil
+                    pool.config = fresh
+                } catch {
+                    let problem = "\(error)"
+                    if problem != configProblem { pool.log("Ignoring the configuration until it is fixed: \(problem)") }
+                    configProblem = problem
+                }
+            }
             // A pool per wake: this loop never returns to a run loop, so the objects Foundation autoreleases
             // while running simctl and reading the state would otherwise pile up for as long as the daemon lives.
             let outcome = autoreleasepool { () -> Outcome? in
@@ -328,8 +352,6 @@ func watchState(in directory: URL, onChange: @escaping @Sendable () -> Void) thr
 
 /// How commands find, start, replace and stop the daemon.
 public struct DaemonLauncher: Sendable {
-    public static let variable = "SIMCTLHOUSE_DAEMON"
-
     public enum Outcome: Equatable, Sendable {
         case running
         case started
@@ -373,15 +395,6 @@ public struct DaemonLauncher: Sendable {
         self.signal = signal
     }
 
-    /// Whether commands start the daemon: `SIMCTLHOUSE_DAEMON=0` turns it off, for CI and throwaway homes.
-    public static func isEnabled(_ environment: [String: String] = ProcessInfo.processInfo.environment) throws -> Bool {
-        switch environment[variable] {
-        case nil, "", "1": return true
-        case "0": return false
-        case let value?: throw SimctlHouseError.invalidEnvironment(variable: variable, value: value, expected: "0 or 1")
-        }
-    }
-
     /// Starts the daemon unless one of this build runs. Call it after the command's own state change has committed:
     /// a daemon exiting concurrently releases its lock only after checking the state under the state lock, so either it
     /// sees the new work and stays, or this call sees it gone and starts another.
@@ -392,14 +405,10 @@ public struct DaemonLauncher: Sendable {
         try ensure().outcome
     }
 
-    /// Runs a command that leaves something for the daemon to watch, then makes sure a daemon runs, unless
-    /// `SIMCTLHOUSE_DAEMON=0`. Only once the command has returned, so after its change has committed (see `ensureRunning`).
+    /// Runs a command that leaves something for the daemon to watch, then makes sure a daemon runs, unless `enabled` is false
+    /// (`PoolConfig.startsDaemon`). Only once the command has returned, so after its change has committed (see `ensureRunning`).
     /// Failing to start the daemon only warns: the command succeeded, and the next command still enforces the timeouts.
-    public func ensureRunning<T>(
-        after command: () throws -> T, environment: [String: String] = ProcessInfo.processInfo.environment, warn: (String) -> Void
-    ) throws -> T {
-        // Checked first, so an invalid value fails the command before it changes anything.
-        let enabled = try Self.isEnabled(environment)
+    public func ensureRunning<T>(after command: () throws -> T, enabled: Bool, warn: (String) -> Void) throws -> T {
         let result = try command()
         guard enabled else { return result }
         do {

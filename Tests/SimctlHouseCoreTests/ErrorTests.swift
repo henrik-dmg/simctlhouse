@@ -25,6 +25,7 @@ import Testing
             (.skillConflict(paths: ["~/.claude/skills/simctlhouse"]), 6),
             (.notASkill("/tmp/skill"), 6),
             (.invalidEnvironment(variable: "SIMCTLHOUSE_DAEMON", value: "yes", expected: "0 or 1"), 64),
+            (.invalidConfig(path: "~/.simctlhouse/config.json", detail: "daemon must be true or false"), 64),
             // `run` reports it as 125, like its other own failures (D34); elsewhere it is a usage error.
             (.invalidRunCommand("-destination 'id=booted' is not the leased simulator"), 64),
         ] as [(SimctlHouseError, Int32)])
@@ -38,7 +39,7 @@ import Testing
         switch error {
         case .simctlFailed, .xcodeRequired, .corruptState, .io, .unknownModel, .unsupportedModel, .noRuntime, .deviceNotFound, .leaseMismatch, .notLeased,
             .deviceLeased, .deviceBusy, .deviceInUse, .deviceMissing, .takenOver, .skillNotShipped, .skillConflict, .notASkill, .invalidEnvironment,
-            .invalidRunCommand:
+            .invalidConfig, .invalidRunCommand:
             break
         }
     }

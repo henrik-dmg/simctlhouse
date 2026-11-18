@@ -113,6 +113,41 @@ import Testing
         #expect(h.clock.now.timeIntervalSince(released) < 15 * 60 + Daemon.pollInterval)
     }
 
+    @Test func picksUpAnEditedConfigurationWithoutARestart() throws {
+        let device = try h.pool.acquire(AcquireRequest(spec: DeviceSpec()))
+        try h.pool.release(device.name)
+        let released = h.clock.now
+        let edited = { () -> PoolConfig in
+            var config = PoolConfig()
+            config.idleShutdown = 0
+            return config
+        }()
+        let daemon = Daemon(
+            pool: h.pool, version: "test", build: build, signals: DaemonSignals(), sleep: { [unowned h] in h.clock.advance(minutes: $0 / 60) },
+            reloadConfig: { edited })
+        #expect(try daemon.serve() == .idle)
+        #expect(h.backend.device(device.udid)?.state == "Shutdown")
+        // With the 15 minutes it started with, it would have waited that long.
+        #expect(h.clock.now.timeIntervalSince(released) < Daemon.pollInterval)
+    }
+
+    @Test func aBrokenConfigurationKeepsTheLastGoodOneAndSaysSoOnce() throws {
+        let device = try h.pool.acquire(AcquireRequest(spec: DeviceSpec()))
+        try h.pool.release(device.name)
+        let released = h.clock.now
+        let messages = Messages()
+        let pool = Pool(
+            paths: HousePaths(root: h.root), backend: h.backend, scanner: h.scanner, now: { [unowned h] in h.clock.now },
+            log: messages.append)
+        let daemon = Daemon(
+            pool: pool, version: "test", build: build, signals: DaemonSignals(), sleep: { [unowned h] in h.clock.advance(minutes: $0 / 60) },
+            reloadConfig: { throw SimctlHouseError.invalidConfig(path: "config.json", detail: "daemon must be true or false") })
+        #expect(try daemon.serve() == .idle)
+        #expect(h.backend.device(device.udid)?.state == "Shutdown")
+        #expect(h.clock.now.timeIntervalSince(released) >= 15 * 60)
+        #expect(messages.all.filter { $0.hasPrefix("Ignoring the configuration") }.count == 1)
+    }
+
     @Test func aKeepAliveKeepsAnIdleDaemonRunning() throws {
         let started = h.clock.now
         let daemon = daemon()
@@ -304,12 +339,12 @@ import Testing
             after: { () -> Int in
                 #expect(spawned.value == 0)
                 return 7
-            }, environment: [:], warn: { Issue.record("unexpected warning: \($0)") })
+            }, enabled: true, warn: { Issue.record("unexpected warning: \($0)") })
         #expect(result == 7)
         #expect(spawned.value == 1)
 
         #expect(throws: SimctlHouseError.deviceNotFound("amber-falcon")) {
-            try launcher.ensureRunning(after: { throw SimctlHouseError.deviceNotFound("amber-falcon") }, environment: [:], warn: { _ in })
+            try launcher.ensureRunning(after: { throw SimctlHouseError.deviceNotFound("amber-falcon") }, enabled: true, warn: { _ in })
         }
         #expect(spawned.value == 1)
     }
@@ -317,17 +352,9 @@ import Testing
     @Test func aCommandLeavesTheDaemonAloneWhenItIsTurnedOff() throws {
         let spawned = Counter()
         let ran = Counter()
-        try launcher(spawned).ensureRunning(after: { ran.increment() }, environment: ["SIMCTLHOUSE_DAEMON": "0"], warn: { _ in })
+        try launcher(spawned).ensureRunning(after: { ran.increment() }, enabled: false, warn: { _ in })
         #expect(ran.value == 1)
         #expect(spawned.value == 0)
-    }
-
-    @Test func anInvalidDaemonSettingFailsTheCommandBeforeItRuns() {
-        let ran = Counter()
-        #expect(throws: SimctlHouseError.invalidEnvironment(variable: "SIMCTLHOUSE_DAEMON", value: "yes", expected: "0 or 1")) {
-            try launcher(Counter()).ensureRunning(after: { ran.increment() }, environment: ["SIMCTLHOUSE_DAEMON": "yes"], warn: { _ in })
-        }
-        #expect(ran.value == 0)
     }
 
     @Test func aDaemonThatCannotStartOnlyWarns() throws {
@@ -335,7 +362,7 @@ import Testing
             paths: HousePaths(root: h.root), build: build, scanner: h.scanner,
             spawn: { _ in throw SimctlHouseError.io("Cannot start the daemon") }, signal: { _ in })
         let warnings = Messages()
-        let result = try launcher.ensureRunning(after: { "done" }, environment: [:], warn: warnings.append)
+        let result = try launcher.ensureRunning(after: { "done" }, enabled: true, warn: warnings.append)
         #expect(result == "done")
         #expect(warnings.all == ["warning: could not start the simctlhouse daemon: Cannot start the daemon"])
     }
@@ -477,15 +504,6 @@ import Testing
         #expect(status.daemon?.pid == 4242)
         #expect(status.isCurrentBuild == true)
         held.release()
-    }
-
-    @Test func theDaemonCanBeTurnedOff() throws {
-        #expect(try DaemonLauncher.isEnabled([:]))
-        #expect(try DaemonLauncher.isEnabled(["SIMCTLHOUSE_DAEMON": "1"]))
-        #expect(try !DaemonLauncher.isEnabled(["SIMCTLHOUSE_DAEMON": "0"]))
-        #expect(throws: SimctlHouseError.invalidEnvironment(variable: "SIMCTLHOUSE_DAEMON", value: "no", expected: "0 or 1")) {
-            try DaemonLauncher.isEnabled(["SIMCTLHOUSE_DAEMON": "no"])
-        }
     }
 
     // MARK: - helpers

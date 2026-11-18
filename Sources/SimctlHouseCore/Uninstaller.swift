@@ -16,6 +16,8 @@ public struct UninstallPlan: Sendable {
     public var daemonRunning: Bool
     public var home: URL
     public var homeExists: Bool
+    /// The user wrote it, so the plan names it: it goes with the state directory.
+    public var configExists: Bool = false
 
     public var totalBytes: Int64 { devices.compactMap(\.bytes).reduce(0, +) }
 }
@@ -46,7 +48,8 @@ public struct Uninstaller: Sendable {
             links: skills.status(in: skillsDirectories).filter { $0.status == .linked || $0.status == .broken },
             daemonRunning: try launcher.status().running,
             home: home,
-            homeExists: FileManager.default.fileExists(atPath: home.path)
+            homeExists: FileManager.default.fileExists(atPath: home.path),
+            configExists: FileManager.default.fileExists(atPath: pool.store.paths.configFile.path)
         )
     }
 

@@ -1,40 +1,5 @@
 import Foundation
 
-public struct PoolConfig: Sendable {
-    public static let leaseVariable = "SIMCTLHOUSE_LEASE_SECONDS"
-    public static let idleVariable = "SIMCTLHOUSE_IDLE_SECONDS"
-
-    /// A lease not released or renewed within this window is forcefully reclaimed.
-    public var leaseDuration: TimeInterval = 30 * 60
-    /// Free booted devices are shut down after this much inactivity; 0 shuts them down on the next command.
-    /// The `gc` command shuts them down regardless.
-    public var idleShutdown: TimeInterval = 15 * 60
-    /// A `provisioning` / `maintenance` step is repaired as soon as the process running it is gone.
-    /// One still running after this long is presumed hung and repaired too; its claim keeps it from acting afterwards.
-    public var hungOperation: TimeInterval = 60 * 60
-    /// `delete` and `erase` wait this long for a device that is `provisioning` or `maintenance`, such as one the daemon is shutting down.
-    public var busyWait: TimeInterval = 30
-
-    public init() {}
-
-    /// Reads the timeouts from the environment. A malformed value is an error rather than silently ignored,
-    /// so a typo cannot quietly leave an agent with a lease of the wrong length.
-    public static func fromEnvironment(_ environment: [String: String] = ProcessInfo.processInfo.environment) throws -> PoolConfig {
-        var config = PoolConfig()
-        if let value = try seconds(environment, leaseVariable, allowZero: false) { config.leaseDuration = value }
-        if let value = try seconds(environment, idleVariable, allowZero: true) { config.idleShutdown = value }
-        return config
-    }
-
-    private static func seconds(_ environment: [String: String], _ variable: String, allowZero: Bool) throws -> TimeInterval? {
-        guard let raw = environment[variable], !raw.isEmpty else { return nil }
-        guard let value = TimeInterval(raw.trimmingCharacters(in: .whitespaces)), value.isFinite, allowZero ? value >= 0 : value > 0 else {
-            throw SimctlHouseError.invalidEnvironment(variable: variable, value: raw, expected: allowZero ? "seconds, 0 or more" : "seconds, more than 0")
-        }
-        return value
-    }
-}
-
 public struct AcquireRequest: Sendable {
     public var spec: DeviceSpec
     /// A specific pool device (name or UDID) to lease instead of any device matching `spec`.
@@ -125,7 +90,8 @@ public struct Pool: Sendable {
     public let store: StateStore
     public let backend: SimulatorBackend
     public let scanner: ProcessScanner
-    public let config: PoolConfig
+    /// Settable so the daemon can pick up an edited `config.json` without restarting.
+    public internal(set) var config: PoolConfig
     /// The process that holds the claims this pool takes.
     let processID: Int32
     let now: @Sendable () -> Date

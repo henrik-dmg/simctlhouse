@@ -17,6 +17,7 @@ public enum SimctlHouseError: Error, Equatable, CustomStringConvertible {
     case deviceMissing(device: String)
     case takenOver(device: String)
     case invalidEnvironment(variable: String, value: String, expected: String)
+    case invalidConfig(path: String, detail: String)
     /// `simctlhouse run` was given a command it will not start.
     case invalidRunCommand(String)
     case skillNotShipped(executable: String)
@@ -35,7 +36,7 @@ public enum SimctlHouseError: Error, Equatable, CustomStringConvertible {
         case .deviceLeased, .deviceBusy, .deviceInUse, .deviceMissing, .takenOver: 5
         case .skillNotShipped, .skillConflict, .notASkill: 6
         case .corruptState, .io: 1
-        case .invalidEnvironment, .invalidRunCommand: 64
+        case .invalidEnvironment, .invalidConfig, .invalidRunCommand: 64
         }
     }
 
@@ -76,6 +77,8 @@ public enum SimctlHouseError: Error, Equatable, CustomStringConvertible {
                 + "judged it hung and repaired it. Run `simctlhouse list` and try again."
         case .invalidEnvironment(let variable, let value, let expected):
             "\(variable)='\(value)' is invalid; expected \(expected)."
+        case .invalidConfig(let path, let detail):
+            "\(path) is invalid: \(detail)."
         case .invalidRunCommand(let detail):
             detail
         case .skillNotShipped(let executable):
