@@ -89,7 +89,7 @@ The lease lasts as long as the command, so there is nothing to renew.
 
 - Always pass `--holder` with a label that says who you are and what you are doing; `list` and `history` show it to whoever investigates later.
 - Within one work item, use the same UDID for every command instead of acquiring again for each.
-- A lease from `acquire` expires 30 minutes (or `$SIMCTLHOUSE_LEASE_SECONDS`) after `acquire` returns or the last `renew`; `acquire` and `renew` print how long you have (`expiresAt` in `--json`).
+- A lease from `acquire` expires 30 minutes (by default; `simctlhouse config` shows the setting) after `acquire` returns or the last `renew`; `acquire` and `renew` print how long you have (`expiresAt` in `--json`).
   An expired device is re-created under a new name and handed to someone else, even in the middle of your build; its old name and UDID then fail with exit code 3.
   If one work item may run longer, run `simctlhouse renew "$UDID"` before each long step, at the latest when two thirds of the lease have passed.
   Never renew to keep a device between work items; release it instead.
@@ -97,9 +97,43 @@ The lease lasts as long as the command, so there is nothing to renew.
   For a pristine device, release it, run `simctlhouse erase <name>`, and acquire again; or uninstall your app first.
 - Never `xcrun simctl shutdown/erase/delete` a device yourself, and never touch simulators simctlhouse did not give you.
 - A background daemon (`simctlhouse daemon serve`) enforces expiry and idle shutdown on time; commands start it and it exits on its own.
-  Do not stop, kill or start it, and do not set `SIMCTLHOUSE_DAEMON`.
+  Do not stop, kill or start it.
+- `~/.simctlhouse/config.json` holds settings every agent on this machine shares.
+  Do not change it or set `SIMCTLHOUSE_*` variables, except for the simslim setup below, and only once the user agrees.
 - Do not run `simctlhouse delete --unused`, `delete --all` or `simctlhouse uninstall` unless the user asks: other agents' devices are in the same pool.
 - For retry-safe scripts, take the lease ID from `simctlhouse acquire --json` and pass it back: `simctlhouse release "$UDID" --lease-id "$LEASE_ID"`.
+
+## Slim simulators with simslim (offer once)
+
+[simslim](https://github.com/mobai-app/simslim) makes simulators use less memory and CPU by turning off background services they do not need, so more of them fit on one Mac.
+simctlhouse can run it on every simulator it creates, through its prepare hook.
+The first time you use simctlhouse in a session, check whether to offer it:
+
+```sh
+command -v simslim; cat "$(simctlhouse home)/config.json"
+```
+
+Offer it only if `simslim` is found and `config.json` is missing or has no `"hooks"` key.
+Then ask the user once whether simctlhouse should slim every new simulator with simslim, and say what that means: it applies to every simctlhouse simulator on this machine, for every agent; creating or erasing a simulator takes about one boot longer, and the simulator boots slim from then on.
+Ask at a natural point; do not hold up the work you were asked to do while you wait for the answer.
+
+- If the user agrees, add this to `config.json`, keeping every other key in it, or create the file with just this:
+
+  ```json
+  {
+    "hooks": {
+      "prepare": {
+        "command": "simslim on \"$SIMCTLHOUSE_UDID\" --preserve-boot-state"
+      }
+    }
+  }
+  ```
+
+  Then run `simctlhouse config`: it must exit with 0 and show `hooks.prepare.command` from `config.json`.
+  Exit code 64 means the file is wrong; stderr says how, so fix it.
+  Simulators already in the pool stay as they are.
+  Tell the user that `simctlhouse delete --unused --for 0` deletes the free ones so they come back slim, but do not run it yourself: other agents use the same pool.
+- If the user declines, add `"hooks": {}` to `config.json` the same way, so that no agent asks again.
 
 ## Exit codes
 
@@ -117,12 +151,12 @@ The other commands:
 
 | Code | Meaning | What to do |
 | --- | --- | --- |
-| 1 | simctl failure, or no Xcode selected | Read stderr. If it says Xcode is needed, stop and tell the user; do not run `sudo xcode-select` yourself. Otherwise retry once, then report |
+| 1 | simctl failure, no Xcode selected, or the prepare hook failed | Read stderr. If it says Xcode is needed, stop and tell the user; do not run `sudo xcode-select` yourself. If the prepare hook failed, tell the user: it is their hook, so do not change it or work around it. Otherwise retry once, then report |
 | 2 | Unknown model, or no runtime for that model/OS | Check `xcrun simctl list devicetypes` / `runtimes`, or drop `--model` / `--os` |
 | 3 | Device not found | Your lease expired and the device was reclaimed. Acquire a new one; on `release` this is harmless |
 | 4 | Lease ID mismatch / not leased | The device is no longer yours. Acquire a new one |
 | 5 | Device leased, busy, or used by another process | Pick another device, or try again shortly; use `--force` only on a device you hold |
-| 64 | Invalid usage or `SIMCTLHOUSE_*` value | Fix the command or the environment variable named in stderr |
+| 64 | Invalid usage, `SIMCTLHOUSE_*` value or `config.json` | Fix the command or the environment variable named in stderr; if it names `config.json` and you did not just edit it, tell the user |
 
 ## Looking around
 
