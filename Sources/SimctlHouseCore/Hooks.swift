@@ -97,7 +97,9 @@ public struct ShellHooks: DeviceHooks {
         posix_spawn_file_actions_adddup2(&actions, 2, 1)
         posix_spawn_file_actions_addinherit_np(&actions, 2)
 
-        let argv = ["/bin/sh", "-c", command].map { strdup($0) } + [nil]
+        // Typed first: Swift before 6.4 infers the literal's elements from `+ [nil]` and rejects the strings.
+        let arguments: [String] = ["/bin/sh", "-c", command]
+        let argv = arguments.map { strdup($0) } + [nil]
         defer { argv.forEach { free($0) } }
         let envp = environment.map { strdup("\($0.key)=\($0.value)") } + [nil]
         defer { envp.forEach { free($0) } }
