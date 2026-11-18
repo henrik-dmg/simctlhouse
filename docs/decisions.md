@@ -169,7 +169,8 @@ Trade-off: a confused agent can release a device another agent holds; `history` 
 
 `SIMCTLHOUSE_LEASE_SECONDS` (default 30 minutes) and `SIMCTLHOUSE_IDLE_SECONDS` (default 15 minutes) set the lease length and the idle shutdown.
 An idle time of 0 shuts free devices down on the next command, for machines where CPU and memory matter more than a warm device.
-Environment variables need no new files and fit how agents are launched; a config file in the state directory would be the alternative.
+Environment variables need no new files and fit how agents are launched.
+Since D40 the same settings can also live in `<home>/config.json`, and a variable overrides the file.
 A malformed value fails every command with exit code 64 rather than falling back to the default, so a typo cannot silently change lease lengths.
 Trade-off: each invocation reads its own environment.
 The lease length is stored in each lease, so it stays consistent, but the idle timeout is enforced by whichever invocation runs GC, and by the daemon with the value of the command that started it (D29), so agents should share the same values.
@@ -407,3 +408,44 @@ Scripts that need a device for several steps take the UDID as an argument and ru
 
 Shortening the 30-minute lease (D9) to force releases was rejected: it would cost more `renew`s in genuinely long work items, and an agent holding a device on purpose would just renew it.
 Trade-off: an agent that comes back to the device after an edit may find it taken and get another one, which then installs the app again, and boots first if no free device is booted.
+
+## D40. A config file and a prepare hook
+
+`<home>/config.json` holds the pool policy that every agent and the daemon must share: `leaseSeconds`, `idleSeconds`, `daemon`, and `hooks.prepare`.
+Each setting is overridden by its environment variable (`SIMCTLHOUSE_LEASE_SECONDS`, `SIMCTLHOUSE_IDLE_SECONDS`, `SIMCTLHOUSE_DAEMON`, `SIMCTLHOUSE_PREPARE`), and falls back to its default.
+`simctlhouse config` shows the settings in effect and where each one comes from.
+
+The variables alone could not keep agents consistent: D21 asked every agent to share the same idle timeout, and the daemon kept the value of whichever command started it.
+One file that every invocation and the daemon read fixes that, and the variables stay for one-off changes, CI and tests.
+
+The file lives in the state directory rather than `~/.config/simctlhouse`, so a throwaway `SIMCTLHOUSE_HOME` never sees the user's settings or runs the user's hook.
+That matters most for the hook: a smoke test in a temp home would otherwise slim, or worse, run some other command on, its devices.
+It is JSON, because Foundation reads it and the package takes no dependency for a format with comments.
+It is checked strictly: an unknown key or a malformed value fails every command with exit code 64, as a bad variable does (D21), because a misspelled `"hook"` would otherwise silently leave every device unprepared.
+Trade-off: an older build next to a newer one rejects keys the newer one added, as D31 already accepts for `state.json`.
+
+The daemon reads the file again on every wake, so an edit applies without a restart; its own environment still wins, as for a command.
+A broken file does not stop it, since lease expiry and idle shutdown would then go unenforced: it logs the problem once and keeps the last good configuration until the file is fixed.
+Commands fail on the broken file at once, so someone sees it.
+
+### The prepare hook
+
+`hooks.prepare.command` (or `SIMCTLHOUSE_PREPARE`) is a shell command run on every device that comes out of `simctl` in stock state: a new device (`acquire`, `run`, `create`), a device re-created after its lease (D10), and an erased one (D7).
+The motivating use is [simslim](https://github.com/mobai-app/simslim), which disables background daemons a simulator does not need: `simslim on "$SIMCTLHOUSE_UDID" --preserve-boot-state`.
+Erasing and re-creating both drop what simslim set, so a hook on creation alone would leave half the pool stock.
+It is called `prepare` rather than `onCreate` for that reason.
+
+It runs while the record is still `provisioning` or `maintenance` under the process's claim (D28), before the device can be leased, and without the state lock.
+The device is shut down then, which is the cheapest moment to change it: no one holds it, and it boots once, slim, when it is first used.
+The hook gets the device through `$SIMCTLHOUSE_UDID`, `$SIMCTLHOUSE_DEVICE_NAME`, `$SIMCTLHOUSE_DEVICE_TYPE`, `$SIMCTLHOUSE_RUNTIME` and `$SIMCTLHOUSE_PREPARE_REASON` (`create`, `recreate` or `erase`), the names `run` uses, rather than `{udid}` placeholders, so there is no quoting to get wrong.
+It runs with `/bin/sh -c`, no stdin, and both its stdout and stderr on simctlhouse's stderr, which is the daemon's log in the daemon, so it never writes into the UDID or JSON a command prints.
+
+A failing hook fails the operation: the device is deleted and retired as `failed`, and the command exits with 1 (`run` with 125).
+Handing out a device the hook failed on would hide the failure from every agent it reaches, and `|| true` makes a hook best effort for whoever prefers that, without another setting.
+`hooks.prepare.timeoutSeconds` (default 600, at most 3000) bounds it, below the hour after which GC judges a claim hung; on timeout the hook and what it started get SIGTERM, then SIGKILL 5 seconds later.
+An empty `SIMCTLHOUSE_PREPARE=` turns the hook off, unlike the other variables, where empty means unset: a hook needs an off switch for one command.
+
+A built-in simslim integration that runs whenever `simslim` is on `PATH` was rejected: installing a tool would silently change what every agent's devices are, and a hook covers any other preparation too.
+Devices already in the pool when the hook is configured are not prepared; deleting the free ones (`delete --unused --for 0`) lets them come back prepared.
+Trade-off: the hook's time adds to the operation that needs it.
+simslim boots a new device once to verify it and shuts it down again, about the length of a first boot, so a `--skip-boot` acquire that creates a device, an `erase`, and a re-create in GC (paid by whichever command or the daemon collects) each take that much longer; the device's first boot for its agent is then a short second boot.

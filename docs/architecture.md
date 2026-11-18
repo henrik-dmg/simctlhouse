@@ -11,6 +11,7 @@ Everything lives in `~/.simctlhouse` (override with `SIMCTLHOUSE_HOME`).
 
 | File | Purpose |
 | --- | --- |
+| `config.json` | Settings and the prepare hook; written by the user, only read by simctlhouse (D40) |
 | `state.json` | The registry of every device simctlhouse owns (see State) |
 | `state.lock` | The `flock` target that guards `state.json` |
 | `state.json.tmp` | Where `state.json` is written before it is renamed into place |
@@ -87,10 +88,14 @@ How the others are read:
 
 | Status | Meaning | Acquirable |
 | --- | --- | --- |
-| `provisioning` | Name reserved, simulator being created, or re-created after an expired lease; carries a claim | no |
+| `provisioning` | Name reserved, simulator being created and prepared, or re-created after an expired lease; carries a claim | no |
 | `available` | Free; booted (recently used) or shut down | yes |
 | `leased` | Held by an agent until `lease.expiresAt` | no |
-| `maintenance` | simctlhouse is shutting down, erasing or deleting it; carries a claim | no |
+| `maintenance` | simctlhouse is shutting down, erasing (and preparing) or deleting it; carries a claim | no |
+
+Every simulator that comes out of `simctl create` or `simctl erase` runs the prepare hook, if one is configured, before its record leaves `provisioning` or `maintenance` (D40).
+The record already carries the new UDID then, so a crash mid-hook leaves a simulator that GC finds and deletes like any half-made one.
+A hook that fails deletes the device and retires it as `failed`.
 
 ## acquire
 
@@ -98,7 +103,7 @@ How the others are read:
 2. With `acquire <name|udid>`, lease that device if it is free and no foreign process references it; otherwise fail with exit code 3 or 5.
 3. Otherwise resolve `--family` / `--model` / `--os` to a device type and runtime (`Catalog`), and under the lock pick an `available` device of exactly that type and runtime whose simulator exists and no foreign process references.
    Prefer a booted one, then the most recently used.
-4. If none matched, reserve a fresh name as `provisioning` with the lease attached, then `simctl create` it outside the lock.
+4. If none matched, reserve a fresh name as `provisioning` with the lease attached, then `simctl create` it outside the lock, and run the prepare hook on it (D40).
 5. `simctl bootstatus <udid> -b` boots the device and waits until boot has fully completed.
    If boot fails, the device is deleted rather than returned to the pool.
 6. Restart the lease's clock, found by lease id, so create and boot time do not count against it (D9).
@@ -173,9 +178,10 @@ The shutdowns and reclaims touch different simulators, so they run in parallel a
 `simctlhouse daemon serve` (`Daemon.serve`) runs GC whenever something comes due, so an expired lease is reclaimed and an idle device shut down on time even if no other command runs (D29).
 In a loop, it:
 
-1. Runs GC if it is due.
-2. Reads the next deadline from the state (`Pool.nextWake`): the earliest lease expiry, end of a free device's idle time, or hung backstop of work in progress.
-3. Sleeps until then.
+1. Reads `config.json` and the environment it started with again (D40); a broken file is logged once and the last good configuration kept.
+2. Runs GC if it is due.
+3. Reads the next deadline from the state (`Pool.nextWake`): the earliest lease expiry, end of a free device's idle time, or hung backstop of work in progress.
+4. Sleeps until then.
    A state change wakes it at once, to re-read the deadlines: it watches the home directory, and every state write renames `state.json` into place.
 
 It collects at least every 60 seconds (`Daemon.pollInterval`), which bounds how late it notices that a crashed process left a claim behind, or that a killed `run` left its lease, and at most once a second.
@@ -231,8 +237,9 @@ Between deadlines the daemon costs nothing: it sleeps, and a state change only m
 
 ## Testing seams
 
-`Pool` takes a `SimulatorBackend`, a `ProcessScanner`, a clock and a logger.
+`Pool` takes a `SimulatorBackend`, a `ProcessScanner`, `DeviceHooks` (the prepare hook), a clock and a logger.
 Unit tests use `FakeBackend` (an in-memory CoreSimulator) and `TestClock` to cover expiry, idle shutdown, crash recovery and concurrent acquires without real simulators.
-`Daemon` takes its sleep as a function, so `DaemonTests` drive it through `TestClock`; `DaemonLauncher` takes its spawn and signal functions.
+`FakeHooks` records each prepare in `FakeBackend`'s call log, so tests see it in order with create, erase and boot.
+`Daemon` takes its sleep and its config reload as functions, so `DaemonTests` drive it through `TestClock`; `DaemonLauncher` takes its spawn and signal functions.
 `Runner` takes a `CommandLauncher` and `RunSignals`, so `RunnerTests` script the command's exit and the signals it gets through `FakeLauncher`, against a real state file and watcher.
-`SIMCTLHOUSE_HOME`, `SIMCTLHOUSE_LEASE_SECONDS` and `SIMCTLHOUSE_IDLE_SECONDS` (see D21) let end-to-end runs use real simulators in an isolated home with short timeouts, and `SIMCTLHOUSE_DAEMON=0` leaves the housekeeping to the commands.
+`SIMCTLHOUSE_HOME`, `SIMCTLHOUSE_LEASE_SECONDS` and `SIMCTLHOUSE_IDLE_SECONDS` (see D21; a throwaway home has no `config.json`, so the user's hook never runs there) let end-to-end runs use real simulators in an isolated home with short timeouts, and `SIMCTLHOUSE_DAEMON=0` leaves the housekeeping to the commands.

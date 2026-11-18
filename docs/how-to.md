@@ -166,20 +166,92 @@ simctlhouse acquire --model com.apple.CoreSimulator.SimDeviceType.iPad-Pro-13-in
 
 Model names are matched exactly (case-insensitive) against `xcrun simctl list devicetypes`.
 
-## Change the timeouts
+## Configure it
 
-```sh
-export SIMCTLHOUSE_LEASE_SECONDS=3600   # 1 hour leases, for long UI suites
-export SIMCTLHOUSE_IDLE_SECONDS=0       # shut free devices down right away
+Settings live in `~/.simctlhouse/config.json` (`$SIMCTLHOUSE_HOME/config.json` with a custom home).
+Every key is optional; leave out what you do not change:
+
+```json
+{
+  "leaseSeconds": 3600,
+  "idleSeconds": 0,
+  "daemon": true,
+  "hooks": {
+    "prepare": {
+      "command": "simslim on \"$SIMCTLHOUSE_UDID\" --preserve-boot-state",
+      "timeoutSeconds": 600
+    }
+  }
+}
 ```
 
-Values are whole or fractional seconds.
-The lease must be more than 0; the idle time may be 0.
-A malformed value makes every command fail with exit code 64 instead of falling back to the default.
+| Key | Variable | Default | Meaning |
+| --- | --- | --- | --- |
+| `leaseSeconds` | `SIMCTLHOUSE_LEASE_SECONDS` | `1800` | Lease length; more than 0 |
+| `idleSeconds` | `SIMCTLHOUSE_IDLE_SECONDS` | `900` | How long a free booted device may sit idle; `0` shuts it down on the next command |
+| `daemon` | `SIMCTLHOUSE_DAEMON` (`0` or `1`) | `true` | Whether commands start the daemon |
+| `hooks.prepare.command` | `SIMCTLHOUSE_PREPARE` | none | Shell command run on every new, re-created or erased device, see below |
+| `hooks.prepare.timeoutSeconds` | none | `600` | How long the hook may take; at most 3000 |
 
-Each invocation reads its own environment.
+A variable overrides the same key in the file, for one command or one shell; values are whole or fractional seconds.
+`SIMCTLHOUSE_PREPARE=` (empty) runs no hook, whatever the file says.
+
+Check the result after every edit:
+
+```sh
+simctlhouse config          # each setting, its value, and whether it comes from the default, config.json or a variable
+simctlhouse config --json
+```
+
+An unknown key, such as a misspelled `"hook"`, or a malformed value makes every command fail with exit code 64 and names the problem, instead of falling back to the default.
+
 The lease length is fixed into each lease when it is acquired or renewed, so agents with different values never disagree about an existing lease.
-The idle timeout is applied by whichever invocation runs garbage collection, and by the daemon with the value of the command that started it, so give every agent the same value, for example in your shell profile.
+The idle timeout is applied by whichever invocation runs garbage collection, and by the daemon, which reads `config.json` again whenever it wakes.
+So put shared values in the file rather than in one agent's environment: the daemon keeps the environment of the command that started it, and a variable there still wins over the file.
+
+## Prepare every new device
+
+The prepare hook runs a shell command on every device that comes out of `simctl` in stock state: created by `acquire`, `run` or `create`, re-created after its lease expired, or erased.
+It runs while the device is shut down and before anyone can lease it.
+The command runs with `/bin/sh -c` and finds the device in its environment:
+
+| Variable | Value |
+| --- | --- |
+| `SIMCTLHOUSE_UDID` | The device's UDID |
+| `SIMCTLHOUSE_DEVICE_NAME` | Its pool name, such as `amber-falcon` |
+| `SIMCTLHOUSE_DEVICE_TYPE` | Its device type identifier |
+| `SIMCTLHOUSE_RUNTIME` | Its runtime identifier |
+| `SIMCTLHOUSE_PREPARE_REASON` | `create`, `recreate` or `erase` |
+
+Its output goes to stderr, or to the daemon's log when the daemon re-creates a device.
+If it exits non-zero or outlasts `timeoutSeconds`, the device is deleted and the command fails with exit code 1 (`run` with 125); the device's `history` says `failed`.
+Append `|| true` to the command if you would rather get an unprepared device than none.
+
+### Slim simulators with simslim
+
+[simslim](https://github.com/mobai-app/simslim) disables the background daemons a simulator does not need, so more of them fit on one Mac:
+
+```sh
+brew install mobai-app/tap/simslim
+```
+
+```json
+{
+  "hooks": {
+    "prepare": {
+      "command": "simslim on \"$SIMCTLHOUSE_UDID\" --preserve-boot-state"
+    }
+  }
+}
+```
+
+`--preserve-boot-state` returns the device to shutdown once it is slim.
+simslim boots the device once to check its work, so creating or erasing a device takes about one first boot longer; the device then boots slim, and its first boot for an agent is short.
+`simslim list` shows each pool device's slim status once it is booted.
+simslim needs iOS 18.5 or newer to keep a device slim across reboots; on older runtimes `simslim on` fails, and so does the hook.
+
+Devices already in the pool stay as they are.
+To have them come back slim, delete the free ones and let simctlhouse create them again: `simctlhouse delete --unused --for 0`.
 
 ## The background daemon
 
@@ -208,7 +280,7 @@ A daemon already running that would stop sooner is restarted with the longer kee
 `daemon serve` runs it in the foreground with the same flag and default.
 This is for testing and watching the daemon: those that commands start have no keep-alive, and a command that replaces the daemon after an upgrade ends it.
 
-`SIMCTLHOUSE_DAEMON=0` keeps commands from starting it, for CI or a throwaway home; the commands then do the cleanup when they run, as before.
+`SIMCTLHOUSE_DAEMON=0`, or `"daemon": false` in `config.json`, keeps commands from starting it, for CI or a throwaway home; the commands then do the cleanup when they run, as before.
 The architecture doc describes how it works.
 
 ## Find out who used a device
@@ -261,13 +333,13 @@ A device that leaves the pool (deleted, vanished, or renamed after an expired le
 | Code | Meaning |
 | --- | --- |
 | 0 | Success |
-| 1 | simctl failure, no Xcode selected (Command Line Tools only), I/O error, or a state file written by a newer simctlhouse |
+| 1 | simctl failure, no Xcode selected (Command Line Tools only), I/O error, a state file written by a newer simctlhouse, or the prepare hook failed on a new or erased device |
 | 2 | Unknown or unsupported model, or no runtime matches |
 | 3 | Device not found (never created by simctlhouse, deleted, or reclaimed after lease expiry) |
 | 4 | Lease ID mismatch, or `renew` of a device that is not leased |
 | 5 | Device is leased, busy, or used by another process (`acquire <name>`; `erase` or `delete` of a leased device without `--force`, or of a busy one still busy after waiting 30 seconds), missing from simctl's device list for a moment (`acquire <name>`), or was taken over because the command ran for over an hour |
 | 6 | `skill install` found no skill next to the binary, or something other than a simctlhouse link is in the way |
-| 64 | Invalid command-line usage, or an invalid `SIMCTLHOUSE_*_SECONDS` or `SIMCTLHOUSE_DAEMON` value |
+| 64 | Invalid command-line usage, an invalid `SIMCTLHOUSE_*_SECONDS` or `SIMCTLHOUSE_DAEMON` value, or an invalid `config.json` |
 
 `run` exits with its command's code instead, so its own failures use codes commands rarely do, as `env` and `timeout` do:
 

@@ -23,6 +23,7 @@ scripts/smoke-test.sh TARBALL [TEST...]  # run a release tarball through scripts
 - `Sources/SimctlHouseCore/`: all behaviour.
   `Pool` is the entry point; `SimulatorBackend` and `ProcessScanner` are the seams for tests.
   `Daemon` runs the background daemon and `DaemonLauncher` starts, replaces and stops it (`Daemon.swift`).
+  `PoolConfig` reads `<home>/config.json` under the environment (`Config.swift`); `DeviceHooks` runs the prepare hook (`Hooks.swift`, see D40).
 - `Tests/SimctlHouseCoreTests/Fakes.swift`: `FakeBackend`, `FakeScanner`, `TestClock`, `Harness`.
 - `skills/simctlhouse/SKILL.md`: the agent skill.
   Update it whenever CLI behaviour or flags change, and keep it free of agent-specific instructions.
@@ -39,6 +40,7 @@ scripts/smoke-test.sh TARBALL [TEST...]  # run a release tarball through scripts
   Finish that work through `Pool.finish(claim)`, never by looking the device up by name (see D28).
 - Take the live `simctl list` snapshot inside the transaction that acts on it.
 - Commands talk to the daemon only through `state.json`; start it after the command's change has committed (`DaemonLauncher.ensureRunning`, see D29).
+- A new setting is a `config.json` key and a `SIMCTLHOUSE_*` variable that overrides it, shown by `simctlhouse config`; unknown keys stay an error.
 - Bump `PoolState.currentVersion` with every change to what `state.json` holds, and keep new fields optional; older builds then refuse the file instead of dropping what they do not know.
 - Pool devices live in the default device set, because xcodebuild cannot see custom sets.
   Devices come from `simctl create` (see D6).

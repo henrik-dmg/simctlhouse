@@ -118,15 +118,21 @@ Commands print machine-readable output on stdout (`--json` for structured data, 
 
 ## Configuration
 
-| Variable | Default | Meaning |
-| --- | --- | --- |
-| `SIMCTLHOUSE_LEASE_SECONDS` | `1800` | Lease length; a lease not renewed within it is reclaimed |
-| `SIMCTLHOUSE_IDLE_SECONDS` | `900` | How long a free booted device may sit idle before it is shut down; `0` shuts it down right away |
-| `SIMCTLHOUSE_HOLDER` | the agent and directory | Default `--holder` label, such as `claude in app` (and the command, for `run`) |
-| `SIMCTLHOUSE_HOME` | `~/.simctlhouse` | Where the pool's state lives |
-| `SIMCTLHOUSE_DAEMON` | `1` | `0` keeps commands from starting the daemon, for CI or a throwaway home |
+Settings live in `~/.simctlhouse/config.json`, and each can be overridden with an environment variable:
 
-Set them where your agents run, for example in your shell profile, so every simctlhouse invocation, and the daemon they start, sees the same values.
+| Key | Variable | Default | Meaning |
+| --- | --- | --- | --- |
+| `leaseSeconds` | `SIMCTLHOUSE_LEASE_SECONDS` | `1800` | Lease length; a lease not renewed within it is reclaimed |
+| `idleSeconds` | `SIMCTLHOUSE_IDLE_SECONDS` | `900` | How long a free booted device may sit idle before it is shut down; `0` shuts it down right away |
+| `daemon` | `SIMCTLHOUSE_DAEMON` | `true` | `false` (or `0`) keeps commands from starting the daemon, for CI or a throwaway home |
+| `hooks.prepare.command` | `SIMCTLHOUSE_PREPARE` | none | Shell command run on every new, re-created or erased device, such as `simslim on "$SIMCTLHOUSE_UDID" --preserve-boot-state` |
+| `hooks.prepare.timeoutSeconds` | | `600` | How long the prepare hook may take |
+| | `SIMCTLHOUSE_HOLDER` | the agent and directory | Default `--holder` label, such as `claude in app` (and the command, for `run`) |
+| | `SIMCTLHOUSE_HOME` | `~/.simctlhouse` | Where the pool's state and `config.json` live |
+
+`simctlhouse config` shows what is in effect and where each value comes from.
+Put shared settings in the file, so every agent and the daemon see the same values.
+The [how-to](docs/how-to.md#configure-it) has the details, including [slimming every device with simslim](docs/how-to.md#slim-simulators-with-simslim).
 
 ## Install
 
