@@ -186,7 +186,7 @@ public enum EndReason: String, Codable, Sendable {
     case deleted
     /// The simulator disappeared outside simctlhouse (Xcode, `simctl delete`, CoreSimulator).
     case vanished
-    /// Creating or booting the simulator failed.
+    /// Creating, preparing or booting the simulator failed.
     case failed
     /// The process creating it died midway, or the `run` process holding the lease exited without releasing it.
     case abandoned

@@ -992,6 +992,117 @@ import Testing
         #expect(try h.state().devices.first?.history.last?.outcome == .erased)
     }
 
+    // MARK: - prepare hook (D40)
+
+    private var preparing: Pool {
+        var config = PoolConfig()
+        config.prepare = PrepareHook(command: "echo \"$SIMCTLHOUSE_UDID\"")
+        return h.pool(config: config)
+    }
+
+    @Test func noHookRunsWithoutOne() throws {
+        let device = try h.pool.acquire(AcquireRequest())
+        _ = try h.pool.erase(device.name, force: true)
+        #expect(h.hooks.prepared.isEmpty)
+    }
+
+    @Test func aNewDeviceIsPreparedBetweenCreateAndBoot() throws {
+        let device = try preparing.acquire(AcquireRequest(holder: "agent-1"))
+        #expect(h.backend.calls == ["create \(device.name)", "prepare \(device.name) create", "boot \(device.name)"])
+        let prepared = try #require(h.hooks.prepared.first)
+        #expect(prepared.udid == device.udid)
+        #expect(prepared.deviceTypeIdentifier == "type.iPhone-18-Pro")
+        #expect(prepared.runtimeIdentifier == "rt.iOS-27-0")
+        #expect(device.status == .leased)
+        // Reusing it prepares nothing: the device keeps what the hook did.
+        try preparing.release(device.name)
+        _ = try preparing.acquire(AcquireRequest())
+        #expect(h.hooks.prepared.count == 1)
+    }
+
+    @Test func aDeviceBeingPreparedCannotBeLeased() throws {
+        let pool = preparing
+        h.hooks.onPrepare = { [unowned h] device in
+            h.hooks.onPrepare = nil
+            #expect((try? h.state())?.devices.first?.status == .provisioning)
+            #expect(throws: SimctlHouseError.deviceBusy(device: device.name, status: .provisioning)) {
+                try h.pool.acquire(AcquireRequest(device: device.name))
+            }
+        }
+        _ = try pool.create(DeviceSpec())
+        #expect(try h.state().devices.map(\.status) == [.available])
+    }
+
+    @Test func createPreparesTheDeviceAndLeavesItShutDown() throws {
+        let device = try preparing.create(DeviceSpec())
+        #expect(h.hooks.prepared.map(\.reason) == [.create])
+        #expect(device.status == .available)
+        #expect(device.state == "Shutdown")
+    }
+
+    @Test func aDeviceTheHookFailsOnIsDeletedAndTheAcquireFails() throws {
+        h.hooks.fail = true
+        do {
+            _ = try preparing.acquire(AcquireRequest())
+            Issue.record("expected the acquire to fail")
+        } catch let error as SimctlHouseError {
+            guard case .prepareFailed = error else { throw error }
+            #expect(error.exitCode == 1)
+        }
+        #expect(try h.backend.devices().isEmpty)
+        #expect(try h.state().devices.isEmpty)
+        #expect(try h.state().retired.map(\.reason) == [.failed])
+        #expect(h.backend.callCount(prefix: "boot") == 0)
+    }
+
+    @Test func aReclaimedDeviceIsPreparedUnderItsNewName() throws {
+        let pool = preparing
+        let device = try pool.acquire(AcquireRequest())
+        h.clock.advance(minutes: 31)
+        try pool.collectGarbage()
+        let after = try #require(try h.state().devices.first)
+        #expect(after.status == .available)
+        #expect(h.hooks.prepared.map(\.reason) == [.create, .recreate])
+        #expect(h.hooks.prepared.last?.name == after.name)
+        #expect(h.hooks.prepared.last?.udid == after.udid)
+        #expect(after.name != device.name)
+    }
+
+    @Test func aReclaimTheHookFailsOnLeavesNoRecordOrSimulator() throws {
+        let pool = preparing
+        _ = try pool.acquire(AcquireRequest())
+        h.hooks.fail = true
+        h.clock.advance(minutes: 31)
+        try pool.collectGarbage()
+        #expect(try h.state().devices.isEmpty)
+        #expect(try h.backend.devices().isEmpty)
+        #expect(try h.state().retired.map(\.reason) == [.expired, .failed])
+    }
+
+    @Test func anErasedDeviceIsPreparedAgain() throws {
+        let pool = preparing
+        let device = try pool.create(DeviceSpec())
+        let erased = try pool.erase(device.name, force: false)
+        #expect(h.hooks.prepared.map(\.reason) == [.create, .erase])
+        #expect(Array(h.backend.calls.suffix(2)) == ["erase \(device.name)", "prepare \(device.name) erase"])
+        #expect(erased.udid == device.udid)
+        #expect(erased.status == .available)
+    }
+
+    @Test func anEraseTheHookFailsOnDeletesTheDevice() throws {
+        let pool = preparing
+        let device = try pool.acquire(AcquireRequest())
+        h.hooks.fail = true
+        #expect(throws: SimctlHouseError.prepareFailed(device: device.name, detail: "exited with status 1")) {
+            try pool.erase(device.name, force: true)
+        }
+        #expect(h.backend.device(device.udid) == nil)
+        #expect(try h.state().devices.isEmpty)
+        let retired = try #require(try h.state().retired.last)
+        #expect(retired.reason == .failed)
+        #expect(retired.history.last?.outcome == .failed)
+    }
+
     private func addRecord(_ name: String, _ status: PoolDevice.Status, claim: Claim?) throws {
         let now = h.clock.now
         try StateStore(paths: HousePaths(root: h.root)).transaction { state in

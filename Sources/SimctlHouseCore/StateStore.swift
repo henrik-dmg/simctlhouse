@@ -16,7 +16,7 @@ public struct HousePaths: Sendable {
     }
 
     public var stateFile: URL { root.appending(path: "state.json") }
-    /// Pool policy the user writes; simctlhouse only reads it (D40).
+    /// Pool policy and hooks the user writes; simctlhouse only reads it (D40).
     public var configFile: URL { root.appending(path: "config.json") }
     public var stateLock: URL { root.appending(path: "state.lock") }
     /// Where `state.json` is written before it is renamed into place. Only the lock holder writes it, so one name suffices.

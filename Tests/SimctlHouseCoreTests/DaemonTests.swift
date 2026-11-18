@@ -137,7 +137,7 @@ import Testing
         let released = h.clock.now
         let messages = Messages()
         let pool = Pool(
-            paths: HousePaths(root: h.root), backend: h.backend, scanner: h.scanner, now: { [unowned h] in h.clock.now },
+            paths: HousePaths(root: h.root), backend: h.backend, scanner: h.scanner, hooks: h.hooks, now: { [unowned h] in h.clock.now },
             log: messages.append)
         let daemon = Daemon(
             pool: pool, version: "test", build: build, signals: DaemonSignals(), sleep: { [unowned h] in h.clock.advance(minutes: $0 / 60) },

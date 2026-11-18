@@ -92,6 +92,7 @@ public struct Pool: Sendable {
     public let scanner: ProcessScanner
     /// Settable so the daemon can pick up an edited `config.json` without restarting.
     public internal(set) var config: PoolConfig
+    let hooks: DeviceHooks
     /// The process that holds the claims this pool takes.
     let processID: Int32
     let now: @Sendable () -> Date
@@ -103,6 +104,7 @@ public struct Pool: Sendable {
         backend: SimulatorBackend = Simctl(),
         scanner: ProcessScanner = PSProcessScanner(),
         config: PoolConfig = PoolConfig(),
+        hooks: DeviceHooks = ShellHooks(),
         processID: Int32 = getpid(),
         now: @escaping @Sendable () -> Date = { Date() },
         log: @escaping @Sendable (String) -> Void = { _ in },
@@ -112,6 +114,7 @@ public struct Pool: Sendable {
         self.backend = backend
         self.scanner = scanner
         self.config = config
+        self.hooks = hooks
         self.processID = processID
         self.now = now
         self.log = log
@@ -501,6 +504,7 @@ public struct Pool: Sendable {
             _ = try? finish(claim) { state, index in state.devices[index].restore(at: now()) }
             throw error
         }
+        try prepare(device, udid: device.udid!, reason: .erase, claim: claim)
         let finished: Void? = try finish(claim) { state, index in
             let now = now()
             state.devices[index].endLease(.erased, at: now)
@@ -795,11 +799,7 @@ public struct Pool: Sendable {
             _ = try? finish(claim) { state, index in state.retire(at: index, reason: .failed, at: now()) }
             throw error
         }
-        return try adopt(udid: udid, claim: claim, name: name) { device in
-            let now = now()
-            device.transition(to: finalStatus, at: now)
-            device.lastActivityAt = now
-        }
+        return try settle(udid: udid, claim: claim, name: name, reason: .create, finalStatus: finalStatus)
     }
 
     /// Replaces a reclaimed device with a newly created one and returns it to the pool shut down.
@@ -825,10 +825,45 @@ public struct Pool: Sendable {
             _ = try? finish(claim) { state, index in state.retire(at: index, reason: .failed, at: now()) }
             throw error
         }
-        _ = try adopt(udid: udid, claim: claim, name: newName) { device in
+        _ = try settle(udid: udid, claim: claim, name: newName, reason: .recreate, finalStatus: .available)
+    }
+
+    /// Records a simulator just created for the record `claim` is on, prepares it, and moves the record to `finalStatus`.
+    /// The record stays `provisioning` while the hook runs, so no one can lease a device that is not ready yet.
+    private func settle(udid: String, claim: Claim, name: String, reason: PrepareReason, finalStatus: PoolDevice.Status) throws -> PoolDevice {
+        let ready: (inout PoolDevice) -> Void = { device in
             let now = now()
-            device.transition(to: .available, at: now)
+            device.transition(to: finalStatus, at: now)
             device.lastActivityAt = now
+        }
+        guard config.prepare != nil else { return try adopt(udid: udid, claim: claim, name: name, ready) }
+        let adopted = try adopt(udid: udid, claim: claim, name: name) { _ in }
+        try prepare(adopted, udid: udid, reason: reason, claim: claim)
+        let settled = try finish(claim) { state, index in
+            ready(&state.devices[index])
+            return state.devices[index]
+        }
+        guard let settled else { throw SimctlHouseError.takenOver(device: name) }
+        return settled
+    }
+
+    /// Runs the prepare hook, if one is configured, on a shut down device this process claims (D40).
+    /// A device the hook failed on is deleted: handing it out unprepared would hide the failure from everyone it reaches.
+    private func prepare(_ device: PoolDevice, udid: String, reason: PrepareReason, claim: Claim) throws {
+        guard let hook = config.prepare else { return }
+        log("Preparing \(device.name) with the prepare hook...")
+        do {
+            try hooks.prepare(
+                PreparedDevice(
+                    udid: udid, name: device.name, deviceTypeIdentifier: device.deviceTypeIdentifier, runtimeIdentifier: device.runtimeIdentifier,
+                    reason: reason),
+                with: hook)
+        } catch {
+            log("Preparing \(device.name) failed; removing it from the pool.")
+            var claimed = device
+            claimed.udid = udid
+            try? destroy(claimed, claim: claim, reason: .failed)
+            throw error
         }
     }
 

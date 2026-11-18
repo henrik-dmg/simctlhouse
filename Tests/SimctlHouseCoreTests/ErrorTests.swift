@@ -24,6 +24,7 @@ import Testing
             (.skillNotShipped(executable: "/usr/local/bin/simctlhouse"), 6),
             (.skillConflict(paths: ["~/.claude/skills/simctlhouse"]), 6),
             (.notASkill("/tmp/skill"), 6),
+            (.prepareFailed(device: "amber-falcon", detail: "exited with status 1"), 1),
             (.invalidEnvironment(variable: "SIMCTLHOUSE_DAEMON", value: "yes", expected: "0 or 1"), 64),
             (.invalidConfig(path: "~/.simctlhouse/config.json", detail: "daemon must be true or false"), 64),
             // `run` reports it as 125, like its other own failures (D34); elsewhere it is a usage error.
@@ -39,7 +40,7 @@ import Testing
         switch error {
         case .simctlFailed, .xcodeRequired, .corruptState, .io, .unknownModel, .unsupportedModel, .noRuntime, .deviceNotFound, .leaseMismatch, .notLeased,
             .deviceLeased, .deviceBusy, .deviceInUse, .deviceMissing, .takenOver, .skillNotShipped, .skillConflict, .notASkill, .invalidEnvironment,
-            .invalidConfig, .invalidRunCommand:
+            .invalidConfig, .prepareFailed, .invalidRunCommand:
             break
         }
     }

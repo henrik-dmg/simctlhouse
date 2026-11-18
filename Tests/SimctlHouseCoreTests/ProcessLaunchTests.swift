@@ -130,4 +130,47 @@ import Testing
         }
         return status
     }
+
+    // MARK: - the prepare hook
+
+    private var device: PreparedDevice {
+        PreparedDevice(udid: "ABC-123", name: "amber-falcon", deviceTypeIdentifier: "type.iPhone", runtimeIdentifier: "rt.iOS", reason: .recreate)
+    }
+
+    @Test func theHookSeesTheDeviceAndTheEnvironment() throws {
+        let out = scratch.appending(path: "seen")
+        let hook = PrepareHook(
+            command:
+                #"echo "$SIMCTLHOUSE_UDID $SIMCTLHOUSE_DEVICE_NAME $SIMCTLHOUSE_DEVICE_TYPE $SIMCTLHOUSE_RUNTIME $SIMCTLHOUSE_PREPARE_REASON $FROM_PARENT" > "$OUT""#
+        )
+        try ShellHooks(environment: ["FROM_PARENT": "inherited", "OUT": out.path]).prepare(device, with: hook)
+        #expect(try String(contentsOf: out, encoding: .utf8) == "ABC-123 amber-falcon type.iPhone rt.iOS recreate inherited\n")
+    }
+
+    @Test func aFailingHookSaysHowItEnded() {
+        #expect(throws: SimctlHouseError.prepareFailed(device: "amber-falcon", detail: "exited with status 3")) {
+            try ShellHooks(environment: [:]).prepare(self.device, with: PrepareHook(command: "exit 3"))
+        }
+        #expect(throws: SimctlHouseError.prepareFailed(device: "amber-falcon", detail: "was killed by signal 9")) {
+            try ShellHooks(environment: [:]).prepare(self.device, with: PrepareHook(command: "kill -KILL $$"))
+        }
+    }
+
+    @Test func aHookThatOutlivesItsTimeoutIsStoppedWithWhatItStarted() throws {
+        let pidFile = scratch.appending(path: "child")
+        let started = Date()
+        #expect(throws: SimctlHouseError.prepareFailed(device: "amber-falcon", detail: "did not finish within 0.5s")) {
+            try ShellHooks(environment: ["PIDFILE": pidFile.path]).prepare(
+                self.device, with: PrepareHook(command: #"sleep 30 & echo $! > "$PIDFILE"; wait"#, timeout: 0.5))
+        }
+        #expect(Date().timeIntervalSince(started) < 10)
+        let child = try #require(Int32(try String(contentsOf: pidFile, encoding: .utf8).trimmingCharacters(in: .whitespacesAndNewlines)))
+        // Reaped by launchd once orphaned; give it a moment.
+        var alive = true
+        for _ in 0..<50 where alive {
+            alive = kill(child, 0) == 0
+            if alive { usleep(100_000) }
+        }
+        #expect(!alive)
+    }
 }

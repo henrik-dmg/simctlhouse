@@ -18,6 +18,8 @@ public enum SimctlHouseError: Error, Equatable, CustomStringConvertible {
     case takenOver(device: String)
     case invalidEnvironment(variable: String, value: String, expected: String)
     case invalidConfig(path: String, detail: String)
+    /// The prepare hook failed on a device, which was then removed from the pool (D40).
+    case prepareFailed(device: String, detail: String)
     /// `simctlhouse run` was given a command it will not start.
     case invalidRunCommand(String)
     case skillNotShipped(executable: String)
@@ -29,7 +31,7 @@ public enum SimctlHouseError: Error, Equatable, CustomStringConvertible {
     /// Distinct exit codes so agents can branch without parsing messages.
     public var exitCode: Int32 {
         switch self {
-        case .simctlFailed, .xcodeRequired: 1
+        case .simctlFailed, .xcodeRequired, .prepareFailed: 1
         case .unknownModel, .unsupportedModel, .noRuntime: 2
         case .deviceNotFound: 3
         case .leaseMismatch, .notLeased: 4
@@ -79,6 +81,9 @@ public enum SimctlHouseError: Error, Equatable, CustomStringConvertible {
             "\(variable)='\(value)' is invalid; expected \(expected)."
         case .invalidConfig(let path, let detail):
             "\(path) is invalid: \(detail)."
+        case .prepareFailed(let device, let detail):
+            "The prepare hook \(detail) on \(device), so it was removed from the pool. "
+                + "Fix the hook (`simctlhouse config` shows it and where it is set), or set SIMCTLHOUSE_PREPARE= to run without it."
         case .invalidRunCommand(let detail):
             detail
         case .skillNotShipped(let executable):

@@ -27,6 +27,7 @@ import Testing
         #expect(config.leaseDuration == 30 * 60)
         #expect(config.idleShutdown == 15 * 60)
         #expect(config.startsDaemon)
+        #expect(config.prepare == nil)
     }
 
     @Test func readsSeconds() throws {
@@ -66,20 +67,35 @@ import Testing
             {
               "leaseSeconds": 3600,
               "idleSeconds": 0,
-              "daemon": false
+              "daemon": false,
+              "hooks": { "prepare": { "command": "echo \\"$SIMCTLHOUSE_UDID\\"", "timeoutSeconds": 120 } }
             }
             """)
         let config = try load()
         #expect(config.leaseDuration == 3600)
         #expect(config.idleShutdown == 0)
         #expect(!config.startsDaemon)
+        #expect(config.prepare == PrepareHook(command: #"echo "$SIMCTLHOUSE_UDID""#, timeout: 120))
+    }
+
+    @Test func theHookTimeoutHasADefault() throws {
+        try write(#"{ "hooks": { "prepare": { "command": "true" } } }"#)
+        #expect(try load().prepare?.timeout == PrepareHook.defaultTimeout)
     }
 
     @Test func theEnvironmentWinsOverTheFile() throws {
-        try write(#"{ "leaseSeconds": 3600, "daemon": false }"#)
-        let config = try load(["SIMCTLHOUSE_LEASE_SECONDS": "60", "SIMCTLHOUSE_DAEMON": "1"])
+        try write(#"{ "leaseSeconds": 3600, "daemon": false, "hooks": { "prepare": { "command": "from-file", "timeoutSeconds": 30 } } }"#)
+        let config = try load(["SIMCTLHOUSE_LEASE_SECONDS": "60", "SIMCTLHOUSE_DAEMON": "1", "SIMCTLHOUSE_PREPARE": "from-env"])
         #expect(config.leaseDuration == 60)
         #expect(config.startsDaemon)
+        // The timeout still comes from the file: it has no variable of its own.
+        #expect(config.prepare == PrepareHook(command: "from-env", timeout: 30))
+    }
+
+    @Test func anEmptyPrepareVariableTurnsTheHookOff() throws {
+        try write(#"{ "hooks": { "prepare": { "command": "echo \"$SIMCTLHOUSE_UDID\"" } } }"#)
+        #expect(try load(["SIMCTLHOUSE_PREPARE": ""]).prepare == nil)
+        #expect(try load(["SIMCTLHOUSE_PREPARE": "  "]).prepare == nil)
     }
 
     @Test func anEmptyFileObjectMeansDefaults() throws {
@@ -90,12 +106,21 @@ import Testing
     @Test(arguments: [
         ("not json", "not valid JSON"),
         ("[]", "the file must be an object"),
-        (#"{ "leaseSecond": 60 }"#, "leaseSecond is not a setting; known: leaseSeconds, idleSeconds, daemon"),
+        (#"{ "leaseSecond": 60 }"#, "leaseSecond is not a setting; known: leaseSeconds, idleSeconds, daemon, hooks"),
         (#"{ "leaseSeconds": 0 }"#, "leaseSeconds must be a number of seconds, more than 0"),
         (#"{ "leaseSeconds": "60" }"#, "leaseSeconds must be a number of seconds, more than 0"),
         (#"{ "leaseSeconds": true }"#, "leaseSeconds must be a number of seconds, more than 0"),
         (#"{ "idleSeconds": -1 }"#, "idleSeconds must be a number of seconds, 0 or more"),
         (#"{ "daemon": 0 }"#, "daemon must be true or false"),
+        (#"{ "hooks": [] }"#, "hooks must be an object"),
+        (#"{ "hooks": { "onCreate": {} } }"#, "hooks.onCreate is not a setting; known: prepare"),
+        (#"{ "hooks": { "prepare": "echo" } }"#, "hooks.prepare must be an object"),
+        (#"{ "hooks": { "prepare": { "comand": "x" } } }"#, "hooks.prepare.comand is not a setting; known: command, timeoutSeconds"),
+        (#"{ "hooks": { "prepare": { "command": " " } } }"#, "hooks.prepare.command must be a non-empty shell command; remove hooks.prepare to run none"),
+        (
+            #"{ "hooks": { "prepare": { "command": "x", "timeoutSeconds": 3600 } } }"#,
+            "hooks.prepare.timeoutSeconds must be a number of seconds, more than 0, at most 3000"
+        ),
     ])
     func rejectsAnInvalidFile(json: String, detail: String) throws {
         try write(json)
@@ -116,7 +141,7 @@ import Testing
     // MARK: - report
 
     @Test func theReportSaysWhereEachSettingComesFrom() throws {
-        try write(#"{ "idleSeconds": 0 }"#)
+        try write(#"{ "idleSeconds": 0, "hooks": { "prepare": { "command": "true" } } }"#)
         let report = try ConfigReport.load(environment: ["SIMCTLHOUSE_DAEMON": "0"], file: file)
         #expect(report.fileExists)
         #expect(
@@ -124,6 +149,14 @@ import Testing
                 ConfigEntry(key: "leaseSeconds", value: .number(1800), source: .default, variable: "SIMCTLHOUSE_LEASE_SECONDS"),
                 ConfigEntry(key: "idleSeconds", value: .number(0), source: .file, variable: "SIMCTLHOUSE_IDLE_SECONDS"),
                 ConfigEntry(key: "daemon", value: .bool(false), source: .environment, variable: "SIMCTLHOUSE_DAEMON"),
+                ConfigEntry(key: "hooks.prepare.command", value: .string("true"), source: .file, variable: "SIMCTLHOUSE_PREPARE"),
+                ConfigEntry(key: "hooks.prepare.timeoutSeconds", value: .number(600), source: .default, variable: nil),
             ])
+    }
+
+    @Test func theReportOfAMissingFileShowsNoHook() throws {
+        let report = try ConfigReport.load(environment: [:], file: file)
+        #expect(!report.fileExists)
+        #expect(report.settings.first { $0.key == "hooks.prepare.command" }?.value == ConfigValue.none)
     }
 }

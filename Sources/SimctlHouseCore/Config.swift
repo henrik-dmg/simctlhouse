@@ -1,10 +1,28 @@
 import Foundation
 
+/// The command simctlhouse runs on every device that comes out of `simctl` in stock state:
+/// created, re-created after a lease, or erased (D40).
+public struct PrepareHook: Equatable, Sendable {
+    public static let defaultTimeout: TimeInterval = 10 * 60
+    /// Kept under `PoolConfig.hungOperation`, so a slow hook is stopped before GC judges its claim hung.
+    public static let maximumTimeout: TimeInterval = 50 * 60
+
+    /// Run by `/bin/sh -c`; the device comes in `$SIMCTLHOUSE_UDID` and friends.
+    public var command: String
+    public var timeout: TimeInterval
+
+    public init(command: String, timeout: TimeInterval = PrepareHook.defaultTimeout) {
+        self.command = command
+        self.timeout = timeout
+    }
+}
+
 /// Pool policy, from the environment over `<home>/config.json` over the defaults (D40).
 public struct PoolConfig: Equatable, Sendable {
     public static let leaseVariable = "SIMCTLHOUSE_LEASE_SECONDS"
     public static let idleVariable = "SIMCTLHOUSE_IDLE_SECONDS"
     public static let daemonVariable = "SIMCTLHOUSE_DAEMON"
+    public static let prepareVariable = "SIMCTLHOUSE_PREPARE"
 
     /// A lease not released or renewed within this window is forcefully reclaimed.
     public var leaseDuration: TimeInterval = 30 * 60
@@ -18,6 +36,7 @@ public struct PoolConfig: Equatable, Sendable {
     public var busyWait: TimeInterval = 30
     /// Whether `acquire`, `release`, `renew` and `run` start the daemon.
     public var startsDaemon = true
+    public var prepare: PrepareHook? = nil
 
     public init() {}
 
@@ -27,7 +46,7 @@ public struct PoolConfig: Equatable, Sendable {
     }
 
     /// A malformed value, in the file or the environment, is an error rather than silently ignored,
-    /// so a typo cannot quietly leave an agent with a lease of the wrong length or a daemon it did not ask for.
+    /// so a typo cannot quietly leave an agent with a lease of the wrong length or a device that was never prepared.
     public static func load(environment: [String: String], file: URL) throws -> PoolConfig {
         try ConfigReport.load(environment: environment, file: file).config
     }
@@ -71,7 +90,7 @@ public enum ConfigValue: Equatable, Sendable, Encodable, CustomStringConvertible
 
 /// One setting of `simctlhouse config`.
 public struct ConfigEntry: Equatable, Sendable, Encodable {
-    /// The key in `config.json`, e.g. `leaseSeconds`.
+    /// The key path in `config.json`, e.g. `hooks.prepare.command`.
     public var key: String
     public var value: ConfigValue
     public var source: ConfigSource
@@ -125,6 +144,20 @@ public struct ConfigReport: Sendable, Encodable {
         config.startsDaemon = daemon.0
         settings.append(ConfigEntry(key: "daemon", value: .bool(daemon.0), source: daemon.1, variable: PoolConfig.daemonVariable))
 
+        // Unlike the other variables, an empty SIMCTLHOUSE_PREPARE means something: no hook, whatever the file says.
+        var command = (parsed.prepareCommand, parsed.prepareCommand == nil ? ConfigSource.default : .file)
+        if let raw = environment[PoolConfig.prepareVariable] {
+            let trimmed = raw.trimmingCharacters(in: .whitespacesAndNewlines)
+            command = (trimmed.isEmpty ? nil : raw, .environment)
+        }
+        let timeout = parsed.prepareTimeout ?? PrepareHook.defaultTimeout
+        config.prepare = command.0.map { PrepareHook(command: $0, timeout: timeout) }
+        settings.append(
+            ConfigEntry(
+                key: "hooks.prepare.command", value: command.0.map(ConfigValue.string) ?? .none, source: command.1, variable: PoolConfig.prepareVariable))
+        settings.append(
+            ConfigEntry(key: "hooks.prepare.timeoutSeconds", value: .number(timeout), source: parsed.prepareTimeout == nil ? .default : .file, variable: nil))
+
         return ConfigReport(file: file.path, fileExists: parsed.exists, settings: settings, config: config)
     }
 
@@ -139,6 +172,8 @@ struct ConfigFile {
     var leaseSeconds: Double?
     var idleSeconds: Double?
     var daemon: Bool?
+    var prepareCommand: String?
+    var prepareTimeout: Double?
 
     static func read(_ url: URL) throws -> ConfigFile {
         let data: Data
@@ -171,21 +206,36 @@ struct ConfigFile {
             return object
         }
 
-        func seconds(_ value: Any?, _ key: String, allowZero: Bool) throws -> Double? {
+        func seconds(_ value: Any?, _ key: String, allowZero: Bool, maximum: Double = .infinity) throws -> Double? {
             guard let value else { return nil }
-            guard let number = value as? NSNumber, !Self.isBool(number), ConfigReport.isValid(number.doubleValue, allowZero: allowZero) else {
-                throw invalid("\(key) must be a number of seconds, \(allowZero ? "0 or more" : "more than 0")")
+            guard let number = value as? NSNumber, !Self.isBool(number), ConfigReport.isValid(number.doubleValue, allowZero: allowZero),
+                number.doubleValue <= maximum
+            else {
+                let bound = maximum.isFinite ? ", at most \(Int(maximum))" : ""
+                throw invalid("\(key) must be a number of seconds, \(allowZero ? "0 or more" : "more than 0")\(bound)")
             }
             return number.doubleValue
         }
 
         var file = ConfigFile(exists: true)
-        let top = try object(root, "the file", allowed: ["leaseSeconds", "idleSeconds", "daemon"])
+        let top = try object(root, "the file", allowed: ["leaseSeconds", "idleSeconds", "daemon", "hooks"])
         file.leaseSeconds = try seconds(top["leaseSeconds"], "leaseSeconds", allowZero: false)
         file.idleSeconds = try seconds(top["idleSeconds"], "idleSeconds", allowZero: true)
         if let daemon = top["daemon"] {
             guard let flag = daemon as? NSNumber, Self.isBool(flag) else { throw invalid("daemon must be true or false") }
             file.daemon = flag.boolValue
+        }
+        if let hooksValue = top["hooks"] {
+            let hooks = try object(hooksValue, "hooks", allowed: ["prepare"])
+            if let prepareValue = hooks["prepare"] {
+                let prepare = try object(prepareValue, "hooks.prepare", allowed: ["command", "timeoutSeconds"])
+                guard let command = prepare["command"] as? String, !command.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else {
+                    throw invalid("hooks.prepare.command must be a non-empty shell command; remove hooks.prepare to run none")
+                }
+                file.prepareCommand = command
+                file.prepareTimeout = try seconds(
+                    prepare["timeoutSeconds"], "hooks.prepare.timeoutSeconds", allowZero: false, maximum: PrepareHook.maximumTimeout)
+            }
         }
         return file
     }

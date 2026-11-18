@@ -147,6 +147,30 @@ final class FakeBackend: SimulatorBackend, @unchecked Sendable {
     func uninstallRuntime(_ identifier: String) { lock.withLock { runtimeList.removeAll { $0.identifier == identifier } } }
 
     func callCount(prefix: String) -> Int { lock.withLock { calls.filter { $0.hasPrefix(prefix) }.count } }
+
+    /// Lets a fake outside the backend log its calls in the same order as `simctl`'s.
+    func record(_ call: String) { lock.withLock { calls.append(call) } }
+}
+
+/// Records every prepare in `backend.calls`, so a test sees it in order with create, erase and boot.
+final class FakeHooks: DeviceHooks, @unchecked Sendable {
+    private let lock = NSLock()
+    let backend: FakeBackend
+    private(set) var prepared: [PreparedDevice] = []
+    var fail = false
+    /// Run before the hook returns, to act as another process while it is in flight.
+    var onPrepare: (@Sendable (PreparedDevice) -> Void)?
+
+    init(backend: FakeBackend) { self.backend = backend }
+
+    func prepare(_ device: PreparedDevice, with hook: PrepareHook) throws {
+        onPrepare?(device)
+        backend.record("prepare \(device.name) \(device.reason.rawValue)")
+        try lock.withLock {
+            prepared.append(device)
+            if fail { throw SimctlHouseError.prepareFailed(device: device.name, detail: "exited with status 1") }
+        }
+    }
 }
 
 final class FakeScanner: ProcessScanner, @unchecked Sendable {
@@ -174,8 +198,11 @@ final class TestClock: @unchecked Sendable {
 final class Harness: Sendable {
     let backend = FakeBackend()
     let scanner = FakeScanner()
+    let hooks: FakeHooks
     let clock = TestClock()
     let root = FileManager.default.temporaryDirectory.appending(path: "simctlhouse-tests-\(UUID().uuidString)")
+
+    init() { hooks = FakeHooks(backend: backend) }
 
     deinit { try? FileManager.default.removeItem(at: root) }
 
@@ -187,7 +214,8 @@ final class Harness: Sendable {
         let clock = clock
         let sleep = sleep ?? { clock.advance(minutes: $0 / 60) }
         return Pool(
-            paths: HousePaths(root: root), backend: backend, scanner: scanner, config: config, processID: processID, now: { clock.now }, sleep: sleep)
+            paths: HousePaths(root: root), backend: backend, scanner: scanner, config: config, hooks: hooks, processID: processID, now: { clock.now },
+            sleep: sleep)
     }
 
     func state() throws -> PoolState { try StateStore(paths: HousePaths(root: root)).snapshot() }

@@ -26,6 +26,7 @@ struct SimctlHouse: ParsableCommand {
               SIMCTLHOUSE_HOLDER         default --holder label (otherwise: the agent and directory)
               SIMCTLHOUSE_HOME           state directory (default ~/.simctlhouse)
               SIMCTLHOUSE_DAEMON         0 to never start the daemon (default 1)
+              SIMCTLHOUSE_PREPARE        prepare hook: shell command run on every new or erased device; empty for none
             Each overrides the same setting in <home>/config.json.
             """,
         version: "0.3.1",
@@ -396,8 +397,21 @@ struct Config: ParsableCommand {
               {
                 "leaseSeconds": 1800,
                 "idleSeconds": 900,
-                "daemon": true
+                "daemon": true,
+                "hooks": {
+                  "prepare": {
+                    "command": "simslim on \\"$SIMCTLHOUSE_UDID\\" --preserve-boot-state",
+                    "timeoutSeconds": 600
+                  }
+                }
               }
+
+            The prepare hook runs with /bin/sh -c on every device that comes out of simctl in stock state: created, \
+            re-created after a lease, or erased. It runs while the device is shut down and before anyone can lease it, \
+            and sees $SIMCTLHOUSE_UDID, $SIMCTLHOUSE_DEVICE_NAME, $SIMCTLHOUSE_DEVICE_TYPE, $SIMCTLHOUSE_RUNTIME and \
+            $SIMCTLHOUSE_PREPARE_REASON (create, recreate or erase). Its output goes to stderr (the daemon's log in the daemon). \
+            If it fails or outlasts timeoutSeconds, the device is deleted and the command fails with exit code 1; \
+            append `|| true` to the command to make it best effort. SIMCTLHOUSE_PREPARE= (empty) runs no hook.
 
             An unknown key or a malformed value fails every command with exit code 64, so a typo never goes unnoticed. \
             Run this command after editing the file to check it.
