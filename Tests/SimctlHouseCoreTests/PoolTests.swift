@@ -181,10 +181,14 @@ import Testing
         #expect(throws: SimctlHouseError.leaseMismatch(device: device.name)) { try h.pool.release(device.name, leaseId: "nope") }
         #expect(throws: SimctlHouseError.deviceNotFound("ghost-town")) { try h.pool.release("ghost-town") }
         let released = try h.pool.release(device.udid!.lowercased(), leaseId: device.leaseId)
-        #expect(released.status == .available)
-        #expect(released.state == "Booted")
-        // Idempotent: releasing twice is fine.
-        #expect(try h.pool.release(device.name).status == .available)
+        #expect(released.endedLease)
+        #expect(released.device.status == .available)
+        #expect(released.device.state == "Booted")
+        // Idempotent: releasing twice is fine, and says nothing ended.
+        let again = try h.pool.release(device.name)
+        #expect(!again.endedLease)
+        #expect(again.device.status == .available)
+        #expect(try #require(try h.pool.history(device.name).first).leases.count == 1)
     }
 
     @Test func expiredLeaseIsReclaimedUnderANewNameAndErased() throws {
@@ -291,7 +295,7 @@ import Testing
         let device = try h.pool.acquire(AcquireRequest(spec: DeviceSpec()))
         #expect(device.shutdownAt == nil)
         h.clock.advance(minutes: 5)
-        let released = try h.pool.release(device.name)
+        let released = try h.pool.release(device.name).device
         #expect(released.shutdownAt == h.clock.now.addingTimeInterval(15 * 60))
         h.clock.advance(minutes: 15)
         try h.pool.collectGarbage()

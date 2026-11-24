@@ -300,25 +300,29 @@ public struct Pool: Sendable {
         if let device { try destroy(device, claim: claim, reason: .failed) }
     }
 
+    /// What `release` did: the device as it is now, and whether a lease ended. Releasing a device that is not leased
+    /// does nothing and is no error, so an agent can release twice, or after its lease ran out and the device was freed.
+    public struct Release: Sendable {
+        public var device: DeviceInfo
+        public var endedLease: Bool
+    }
+
     /// Returns a leased device to the pool. The device stays booted (and is not erased) for fast reuse.
     @discardableResult
-    public func release(_ ref: String, leaseId: String? = nil) throws -> DeviceInfo {
+    public func release(_ ref: String, leaseId: String? = nil) throws -> Release {
         try collectGarbage()
-        let name = try store.transaction { state -> String in
+        let (name, endedLease) = try store.transaction { state -> (String, Bool) in
             guard let index = state.index(of: ref) else { throw SimctlHouseError.deviceNotFound(ref) }
             let device = state.devices[index]
-            guard device.status == .leased else {
-                log("\(device.name) is not leased; nothing to release.")
-                return device.name
-            }
+            guard device.status == .leased else { return (device.name, false) }
             if let leaseId, device.lease?.id != leaseId { throw SimctlHouseError.leaseMismatch(device: device.name) }
             let now = now()
             state.devices[index].endLease(.released, at: now)
             state.devices[index].transition(to: .available, at: now)
             state.devices[index].lastActivityAt = now
-            return device.name
+            return (device.name, true)
         }
-        return try info(for: name)
+        return Release(device: try info(for: name), endedLease: endedLease)
     }
 
     /// Extends a lease by another full lease duration from now.

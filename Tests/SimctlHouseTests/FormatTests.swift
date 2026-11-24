@@ -57,14 +57,18 @@ import Testing
     @Test func releaseSaysHowLongTheDeviceStaysWarm() {
         // Just released: the stored time lost its fraction, so it shows the full idle time.
         #expect(
-            Format.released(Self.device(.available, shutdownIn: 60 - 0.7), idleShutdown: 60)
+            Format.released(Self.device(.available, shutdownIn: 60 - 0.7), endedLease: true, idleShutdown: 60)
                 == "Released amber-falcon. It stays booted for 1m for the next agent.")
-        #expect(Format.released(Self.device(.available, shutdownIn: 0), idleShutdown: 0) == "Released amber-falcon. It shuts down now.")
-        // Already free: release changes nothing, so it counts down to the stored time.
+        #expect(Format.released(Self.device(.available, shutdownIn: 0), endedLease: true, idleShutdown: 0) == "Released amber-falcon. It shuts down now.")
+        #expect(Format.released(Self.device(.available), endedLease: true, idleShutdown: 15 * 60) == "Released amber-falcon.")
+    }
+
+    @Test func releasingADeviceThatIsNotLeasedSaysSoAndCountsDownToTheStoredTime() {
+        // Even when the stored time is about one idle time away, nothing was released just now.
         #expect(
-            Format.released(Self.device(.available, shutdownIn: 5 * 60), idleShutdown: 15 * 60)
-                == "Released amber-falcon. It stays booted for 5m for the next agent.")
-        #expect(Format.released(Self.device(.available), idleShutdown: 15 * 60) == "Released amber-falcon.")
+            Format.released(Self.device(.available, shutdownIn: 60 - 0.7), endedLease: false, idleShutdown: 60)
+                == "amber-falcon is not leased; nothing to release. It stays booted for 59s for the next agent.")
+        #expect(Format.released(Self.device(.available), endedLease: false, idleShutdown: 15 * 60) == "amber-falcon is not leased; nothing to release.")
     }
 
     @Test(
