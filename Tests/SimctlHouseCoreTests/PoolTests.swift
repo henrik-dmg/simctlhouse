@@ -73,6 +73,33 @@ import Testing
         #expect(h.backend.crashedSpringBoards.isEmpty)
         let leases = try #require(try h.pool.history(first.name).first).leases
         #expect(leases.map(\.rebootedAfterSpringBoardCrash) == [nil, true])
+        #expect(h.logs.value.contains { $0.contains("status -5") })
+    }
+
+    @Test func aSpringBoardThatCrashesAgainDuringTheRebootIsLoggedAndTheDeviceHandedOut() throws {
+        let first = try h.pool.acquire(AcquireRequest())
+        try h.pool.release(first.name)
+        h.backend.crashedSpringBoards.insert(first.udid!)
+        h.backend.springBoardCrashesOnBoot.insert(first.udid!)
+
+        let again = try h.pool.acquire(AcquireRequest())
+        #expect(again.udid == first.udid)
+        #expect(h.backend.callCount(prefix: "shutdown") == 1)
+        #expect(h.backend.callCount(prefix: "check SpringBoard") == 2)
+        #expect(h.logs.value.contains { $0.contains("again") })
+    }
+
+    @Test func aSpringBoardStatusThatCannotBeReadIsLoggedAndTheDeviceHandedOutWithoutAReboot() throws {
+        let first = try h.pool.acquire(AcquireRequest())
+        try h.pool.release(first.name)
+        h.backend.failSpringBoardCheck = true
+
+        let again = try h.pool.acquire(AcquireRequest())
+        #expect(again.udid == first.udid)
+        #expect(h.backend.callCount(prefix: "shutdown") == 0)
+        let leases = try #require(try h.pool.history(first.name).first).leases
+        #expect(leases.map(\.rebootedAfterSpringBoardCrash) == [nil, nil])
+        #expect(h.logs.value.contains { $0.contains("did not finish within") })
     }
 
     @Test func aDeviceThatCannotBeShutDownForTheRebootIsStillHandedOut() throws {

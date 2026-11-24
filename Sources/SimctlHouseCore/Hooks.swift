@@ -62,9 +62,10 @@ public struct ShellHooks: DeviceHooks {
             exited.signal()
         }
         if exited.wait(timeout: .now() + hook.timeout) == .timedOut {
-            Self.signalTree(pid, SIGTERM)
+            // The shell and whatever it started, such as `simslim` and the `simctl` calls it makes.
+            ProcessTable.signalTree(pid, SIGTERM)
             if exited.wait(timeout: .now() + Self.terminationGrace) == .timedOut {
-                Self.signalTree(pid, SIGKILL)
+                ProcessTable.signalTree(pid, SIGKILL)
                 exited.wait()
             }
             throw SimctlHouseError.prepareFailed(device: device.name, detail: "did not finish within \(String(format: "%g", hook.timeout))s")
@@ -107,12 +108,5 @@ public struct ShellHooks: DeviceHooks {
         let result = posix_spawn(&pid, "/bin/sh", &actions, &attributes, argv, envp)
         guard result == 0 else { throw SimctlHouseError.io("Cannot start the prepare hook: \(String(cString: strerror(result)))") }
         return pid
-    }
-
-    /// The shell and whatever it started, such as `simslim` and the `simctl` calls it makes.
-    private static func signalTree(_ pid: Int32, _ signal: Int32) {
-        let tree = ProcessTable.descendants(of: pid)
-        _ = kill(pid, signal)
-        for process in tree { _ = kill(process, signal) }
     }
 }

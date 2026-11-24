@@ -26,6 +26,10 @@ final class FakeBackend: SimulatorBackend, @unchecked Sendable {
     var failDelete: Set<String> = []
     /// UDIDs of booted devices whose SpringBoard has crashed since they booted; a reboot clears it.
     var crashedSpringBoards: Set<String> = []
+    /// UDIDs of devices whose SpringBoard crashes during every boot.
+    var springBoardCrashesOnBoot: Set<String> = []
+    /// Reading SpringBoard's status fails, as when the simulator does not answer.
+    var failSpringBoardCheck = false
     /// Run outside the backend's lock, to act as another process while a slow `simctl` call is in flight.
     var onCreate: (@Sendable () -> Void)?
     var onErase: (@Sendable () -> Void)?
@@ -88,6 +92,7 @@ final class FakeBackend: SimulatorBackend, @unchecked Sendable {
             calls.append("boot \(storage[udid]?.name ?? udid)")
             if failBoot { throw SimctlHouseError.simctlFailed(command: "bootstatus", status: 1, stderr: "boom") }
             storage[udid]?.state = "Booted"
+            if springBoardCrashesOnBoot.contains(udid) { crashedSpringBoards.insert(udid) }
         }
     }
 
@@ -100,10 +105,12 @@ final class FakeBackend: SimulatorBackend, @unchecked Sendable {
         }
     }
 
-    func springBoardCrashed(udid: String) -> Bool {
-        lock.withLock {
+    func springBoardExitStatus(udid: String) throws -> Int32? {
+        try lock.withLock {
             calls.append("check SpringBoard \(storage[udid]?.name ?? udid)")
-            return crashedSpringBoards.contains(udid)
+            if failSpringBoardCheck { throw SimctlHouseError.timedOut(command: "xcrun simctl spawn \(udid) launchctl list", seconds: 10) }
+            // A trap, as recorded on iOS 26.0 (D41).
+            return crashedSpringBoards.contains(udid) ? -5 : 0
         }
     }
 
@@ -212,6 +219,8 @@ final class Harness: Sendable {
     let scanner = FakeScanner()
     let hooks: FakeHooks
     let clock = TestClock()
+    /// Every message the pools made here logged, in order.
+    let logs = Locked<[String]>([])
     let root = FileManager.default.temporaryDirectory.appending(path: "simctlhouse-tests-\(UUID().uuidString)")
 
     init() { hooks = FakeHooks(backend: backend) }
@@ -224,10 +233,11 @@ final class Harness: Sendable {
     /// By default a pool's sleep moves the test clock, so a wait that never ends fails instead of spinning.
     func pool(config: PoolConfig = PoolConfig(), processID: Int32 = getpid(), sleep: (@Sendable (TimeInterval) -> Void)? = nil) -> Pool {
         let clock = clock
+        let logs = logs
         let sleep = sleep ?? { clock.advance(minutes: $0 / 60) }
         return Pool(
             paths: HousePaths(root: root), backend: backend, scanner: scanner, config: config, hooks: hooks, processID: processID, now: { clock.now },
-            sleep: sleep)
+            log: { message in logs.mutate { $0.append(message) } }, sleep: sleep)
     }
 
     func state() throws -> PoolState { try StateStore(paths: HousePaths(root: root)).snapshot() }

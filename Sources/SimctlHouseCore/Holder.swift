@@ -106,6 +106,13 @@ enum ProcessTable {
         return found
     }
 
+    /// Signals `pid` and every process below it.
+    static func signalTree(_ pid: Int32, _ signal: Int32) {
+        let tree = descendants(of: pid)
+        _ = kill(pid, signal)
+        for process in tree { _ = kill(process, signal) }
+    }
+
     /// `argv[0]` from `KERN_PROCARGS2`: an argc, the executable path, padding, then the arguments.
     private static func argv0(of pid: Int32) -> String? {
         var mib: [Int32] = [CTL_KERN, KERN_PROCARGS2, pid]

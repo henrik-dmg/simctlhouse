@@ -465,3 +465,6 @@ It costs one `simctl spawn` on every hand-out of a booted device, a fraction of 
 A device taken with `--skip-boot` is handed out as it is (D37), unchecked: its holder asked for no boot, typically to build.
 A crash in the middle of a lease is left to its holder, who may be relying on the device as it is.
 If the status cannot be read, the device is handed out as before: the check only ever adds a reboot.
+The check gives up after 10 seconds, so a simulator that says it is booted but no longer answers cannot hold `acquire` forever; a check that fails or times out is logged, and the device is handed out unchecked.
+The log names the status read, so a reboot nobody expected can be traced to its cause; any non-zero status counts, since a SpringBoard that was killed is restarted the same way as one that trapped.
+After a reboot SpringBoard is checked once more, and a device whose SpringBoard crashed again while it booted is logged and handed out as it is: rebooting it again would not help, and the next hand-out tries anew.

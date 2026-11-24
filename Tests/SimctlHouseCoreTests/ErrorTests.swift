@@ -7,6 +7,7 @@ import Testing
     @Test(
         arguments: [
             (SimctlHouseError.simctlFailed(command: "simctl boot X", status: 149, stderr: ""), 1),
+            (.timedOut(command: "xcrun simctl spawn X launchctl list", seconds: 10), 1),
             (.xcodeRequired(stderr: "xcrun: error: unable to find utility \"simctl\""), 1),
             (.corruptState("bad"), 1),
             (.io("disk full"), 1),
@@ -38,7 +39,8 @@ import Testing
     /// Stops compiling when a case is added, as a reminder to give it a row above.
     private func listedAbove(_ error: SimctlHouseError) {
         switch error {
-        case .simctlFailed, .xcodeRequired, .corruptState, .io, .unknownModel, .unsupportedModel, .noRuntime, .deviceNotFound, .leaseMismatch, .notLeased,
+        case .simctlFailed, .timedOut, .xcodeRequired, .corruptState, .io, .unknownModel, .unsupportedModel, .noRuntime, .deviceNotFound, .leaseMismatch,
+            .notLeased,
             .deviceLeased, .deviceBusy, .deviceInUse, .deviceMissing, .takenOver, .skillNotShipped, .skillConflict, .notASkill, .invalidEnvironment,
             .invalidConfig, .prepareFailed, .invalidRunCommand:
             break

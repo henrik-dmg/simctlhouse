@@ -335,7 +335,7 @@ A device that leaves the pool (deleted, vanished, or renamed after an expired le
 | Code | Meaning |
 | --- | --- |
 | 0 | Success |
-| 1 | simctl failure, no Xcode selected (Command Line Tools only), I/O error, a state file written by a newer simctlhouse, or the prepare hook failed on a new or erased device |
+| 1 | simctl failure (or a simctl call that did not finish in time), no Xcode selected (Command Line Tools only), I/O error, a state file written by a newer simctlhouse, or the prepare hook failed on a new or erased device |
 | 2 | Unknown or unsupported model, or no runtime matches |
 | 3 | Device not found (never created by simctlhouse, deleted, or reclaimed after lease expiry) |
 | 4 | Lease ID mismatch, or `renew` of a device that is not leased |

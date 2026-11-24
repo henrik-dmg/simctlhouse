@@ -67,17 +67,26 @@ import Testing
         #expect(calls.all == [["bootstatus", "X", "-b"]])
     }
 
-    @Test func readsWhetherSpringBoardCrashedFromLaunchctl() {
+    @Test func readsSpringBoardsExitStatusFromLaunchctl() throws {
         // Recorded on iOS 26.0 simulators: healthy, and after SpringBoard trapped (-5) on an appearance switch.
         let healthy = "PID\tStatus\tLabel\n53399\t0\tcom.apple.backboardd\n8833\t0\tcom.apple.SpringBoard\n-\t0\tcom.apple.UIKit.OverlayUI\n"
         let crashed = "PID\tStatus\tLabel\n53399\t0\tcom.apple.backboardd\n93082\t-5\tcom.apple.SpringBoard\n"
         let (simctl, calls) = Simctl.replying(stdout: crashed)
-        #expect(simctl.springBoardCrashed(udid: "X"))
+        #expect(try simctl.springBoardExitStatus(udid: "X") == -5)
         #expect(calls.all == [["spawn", "X", "launchctl", "list"]])
-        #expect(!Simctl.replying(stdout: healthy).0.springBoardCrashed(udid: "X"))
-        // No SpringBoard (another platform) or no answer: nothing to act on.
-        #expect(!Simctl.replying(stdout: "PID\tStatus\tLabel\n1\t0\tcom.apple.PineBoard\n").0.springBoardCrashed(udid: "X"))
-        #expect(!Simctl.replying(status: 149, stderr: "Unable to lookup in current state: Shutdown").0.springBoardCrashed(udid: "X"))
+        #expect(try Simctl.replying(stdout: healthy).0.springBoardExitStatus(udid: "X") == 0)
+        // No SpringBoard: another platform, nothing to act on.
+        #expect(try Simctl.replying(stdout: "PID\tStatus\tLabel\n1\t0\tcom.apple.PineBoard\n").0.springBoardExitStatus(udid: "X") == nil)
+        #expect(throws: SimctlHouseError.self) {
+            try Simctl.replying(status: 149, stderr: "Unable to lookup in current state: Shutdown").0.springBoardExitStatus(udid: "X")
+        }
+    }
+
+    @Test func readingSpringBoardsStatusHasATimeoutAndOtherCallsHaveNone() throws {
+        let (simctl, calls) = Simctl.replying(stdout: "")
+        _ = try simctl.springBoardExitStatus(udid: "X")
+        try simctl.bootAndWait(udid: "X")
+        #expect(calls.timeouts == [Simctl.springBoardStatusTimeout, nil])
     }
 
     @Test func shuttingDownAShutDownDeviceIsNoFailure() throws {
@@ -107,7 +116,7 @@ import Testing
     @Test func aDeviceExistsOnDiskWhileItsPlistDoes() throws {
         let set = FileManager.default.temporaryDirectory.appending(path: "simctlhouse-set-\(UUID().uuidString)")
         defer { try? FileManager.default.removeItem(at: set) }
-        let simctl = Simctl(execute: { _ in Subprocess.Result(status: 0, stdout: Data(), stderr: "") }, devicesDirectory: set)
+        let simctl = Simctl(execute: { _, _ in Subprocess.Result(status: 0, stdout: Data(), stderr: "") }, devicesDirectory: set)
         let udid = "E1B5E4F7-1356-4DBA-9D3C-CC2F5807D95B"
         #expect(!simctl.existsOnDisk(udid: udid))
         // A directory without a device.plist is no device.
@@ -115,6 +124,29 @@ import Testing
         #expect(!simctl.existsOnDisk(udid: udid))
         try Data().write(to: set.appending(path: udid).appending(path: "device.plist"))
         #expect(simctl.existsOnDisk(udid: udid))
+    }
+
+    // MARK: - Subprocess
+
+    @Test func aSubprocessReportsItsStatusAndBothOutputs() throws {
+        let result = try Subprocess.run("/bin/sh", ["-c", "echo out; echo err >&2; exit 3"])
+        #expect(result.status == 3)
+        #expect(String(decoding: result.stdout, as: UTF8.self) == "out\n")
+        #expect(result.stderr == "err\n")
+    }
+
+    @Test func aSubprocessThatOutlivesItsTimeoutIsKilled() {
+        #expect(throws: SimctlHouseError.timedOut(command: "sh -c sleep 60", seconds: 0.2)) {
+            try Subprocess.run("/bin/sh", ["-c", "sleep 60"], timeout: 0.2)
+        }
+    }
+
+    @Test func aSubprocessReturnsOnceItExitsThoughWhatItStartedStillHoldsItsOutput() throws {
+        // As the process `simctl spawn` starts in the simulator can: reading a pipe to its end would wait for it.
+        let result = try Subprocess.run("/bin/sh", ["-c", "echo out; sleep 60 & echo $! >&2"], timeout: 30)
+        #expect(String(decoding: result.stdout, as: UTF8.self) == "out\n")
+        let sleeper = try #require(Int32(result.stderr.trimmingCharacters(in: .whitespacesAndNewlines)))
+        kill(sleeper, SIGKILL)
     }
 
     // MARK: - recorded output
@@ -226,21 +258,22 @@ import Testing
         """
 }
 
-/// The arguments of every `simctl` call, in order.
+/// The arguments and timeout of every `simctl` call, in order.
 final class SimctlCalls: @unchecked Sendable {
     private let lock = NSLock()
-    private var calls: [[String]] = []
+    private var calls: [(arguments: [String], timeout: TimeInterval?)] = []
 
-    var all: [[String]] { lock.withLock { calls } }
-    func record(_ arguments: [String]) { lock.withLock { calls.append(arguments) } }
+    var all: [[String]] { lock.withLock { calls.map(\.arguments) } }
+    var timeouts: [TimeInterval?] { lock.withLock { calls.map(\.timeout) } }
+    func record(_ arguments: [String], timeout: TimeInterval?) { lock.withLock { calls.append((arguments, timeout)) } }
 }
 
 extension Simctl {
     /// A `Simctl` whose every call returns this output, recording its arguments in `calls`.
     static func replying(status: Int32 = 0, stdout: String = "", stderr: String = "") -> (Simctl, SimctlCalls) {
         let calls = SimctlCalls()
-        let simctl = Simctl { arguments in
-            calls.record(arguments)
+        let simctl = Simctl { arguments, timeout in
+            calls.record(arguments, timeout: timeout)
             return Subprocess.Result(status: status, stdout: Data(stdout.utf8), stderr: stderr)
         }
         return (simctl, calls)

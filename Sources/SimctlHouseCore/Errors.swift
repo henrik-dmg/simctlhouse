@@ -2,6 +2,8 @@ import Foundation
 
 public enum SimctlHouseError: Error, Equatable, CustomStringConvertible {
     case simctlFailed(command: String, status: Int32, stderr: String)
+    /// A command that did not finish in time was killed.
+    case timedOut(command: String, seconds: TimeInterval)
     /// `xcrun` itself failed before simctl ran: no Xcode selected, typically Command Line Tools only.
     case xcodeRequired(stderr: String)
     case unknownModel(String)
@@ -31,7 +33,7 @@ public enum SimctlHouseError: Error, Equatable, CustomStringConvertible {
     /// Distinct exit codes so agents can branch without parsing messages.
     public var exitCode: Int32 {
         switch self {
-        case .simctlFailed, .xcodeRequired, .prepareFailed: 1
+        case .simctlFailed, .timedOut, .xcodeRequired, .prepareFailed: 1
         case .unknownModel, .unsupportedModel, .noRuntime: 2
         case .deviceNotFound: 3
         case .leaseMismatch, .notLeased: 4
@@ -46,6 +48,8 @@ public enum SimctlHouseError: Error, Equatable, CustomStringConvertible {
         switch self {
         case .simctlFailed(let command, let status, let stderr):
             "`xcrun \(command)` failed with status \(status): \(stderr.trimmingCharacters(in: .whitespacesAndNewlines))"
+        case .timedOut(let command, let seconds):
+            "`\(command)` did not finish within \(String(format: "%g", seconds))s and was killed."
         case .xcodeRequired(let stderr):
             "simctlhouse needs Xcode's simctl, but xcrun could not run it: \(stderr.trimmingCharacters(in: .whitespacesAndNewlines)). "
                 + "Install Xcode (Command Line Tools alone have no simulators), then select it with "

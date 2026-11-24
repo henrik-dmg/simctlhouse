@@ -234,8 +234,8 @@ public struct Pool: Sendable {
     private func boot(_ device: PoolDevice, isBooted: Bool) throws -> Bool {
         var rebooted = false
         do {
-            if isBooted, backend.springBoardCrashed(udid: device.udid!) {
-                log("\(device.name)'s SpringBoard has crashed since it booted; rebooting it...")
+            if isBooted, let status = springBoardExitStatus(device), status != 0 {
+                log("\(device.name)'s SpringBoard has exited with status \(status) since it booted; rebooting it...")
                 // A shutdown that fails is no reason to drop a device that is still usable: hand it out as it is (D41).
                 do {
                     try backend.shutdown(udid: device.udid!)
@@ -248,12 +248,26 @@ public struct Pool: Sendable {
             }
             // Also called for booted devices: bootstatus returns immediately once boot has fully completed.
             try backend.bootAndWait(udid: device.udid!)
+            // A SpringBoard that crashes during every boot is not fixed by rebooting; say so instead of looping on it.
+            if rebooted, let status = springBoardExitStatus(device), status != 0 {
+                log("\(device.name)'s SpringBoard exited with status \(status) again while it rebooted; handing it out as it is.")
+            }
             return rebooted
         } catch {
             // A device that cannot boot is useless to the next agent too; drop it instead of returning it to the pool.
             log("Boot of \(device.name) failed; removing it from the pool.")
             try? dropAfterFailedBoot(leaseId: device.lease!.id)
             throw error
+        }
+    }
+
+    /// SpringBoard's last exit status, or nil when it cannot be read: the check only ever adds a reboot (D41).
+    private func springBoardExitStatus(_ device: PoolDevice) -> Int32? {
+        do {
+            return try backend.springBoardExitStatus(udid: device.udid!)
+        } catch {
+            log("Could not read \(device.name)'s SpringBoard status: \(error)")
+            return nil
         }
     }
 

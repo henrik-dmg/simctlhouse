@@ -107,6 +107,7 @@ A hook that fails deletes the device and retires it as `failed`.
 4. If none matched, reserve a fresh name as `provisioning` with the lease attached, then `simctl create` it outside the lock, and run the prepare hook on it (D40).
 5. `simctl bootstatus <udid> -b` boots the device and waits until boot has fully completed.
    A device that was already booted is first checked with `simctl spawn <udid> launchctl list`: if SpringBoard has exited abnormally since boot, it is shut down and booted again, and the lease records it (D41).
+   The check has a 10 second timeout; a failed check hands the device out unchecked, and a SpringBoard that crashed again during the reboot is only logged.
    If boot fails, the device is deleted rather than returned to the pool.
 6. Restart the lease's clock, found by lease id, so create and boot time do not count against it (D9).
    If the lease is gone (a boot that outlasted it, or a forced `delete`), fail with exit code 3.

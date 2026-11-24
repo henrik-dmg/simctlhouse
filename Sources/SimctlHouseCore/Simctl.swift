@@ -71,23 +71,23 @@ public protocol SimulatorBackend: Sendable {
     func existsOnDisk(udid: String) -> Bool
     /// Disk space the simulator takes, in bytes, or nil if it cannot be measured.
     func diskUsage(udid: String) -> Int64?
-    /// Whether the booted simulator's SpringBoard has exited abnormally since the simulator booted (D41).
-    /// False when it cannot tell, such as on a platform without SpringBoard.
-    func springBoardCrashed(udid: String) -> Bool
+    /// The booted simulator's SpringBoard's last exit status: non-zero once it has exited abnormally since the simulator
+    /// booted (D41). Nil on a platform without SpringBoard; throws when the simulator does not answer.
+    func springBoardExitStatus(udid: String) throws -> Int32?
 }
 
 public struct Simctl: SimulatorBackend {
     /// Runs `xcrun simctl` with the given arguments. Tests pass recorded output instead.
-    let execute: @Sendable ([String]) throws -> Subprocess.Result
+    let execute: @Sendable ([String], _ timeout: TimeInterval?) throws -> Subprocess.Result
     /// The default device set, where every pool device lives (D6): one directory per UDID.
     let devicesDirectory: URL
 
     public init() {
-        self.init(execute: { arguments in try Subprocess.run("/usr/bin/xcrun", ["simctl"] + arguments) })
+        self.init(execute: { arguments, timeout in try Subprocess.run("/usr/bin/xcrun", ["simctl"] + arguments, timeout: timeout) })
     }
 
     init(
-        execute: @escaping @Sendable ([String]) throws -> Subprocess.Result,
+        execute: @escaping @Sendable ([String], _ timeout: TimeInterval?) throws -> Subprocess.Result,
         devicesDirectory: URL = FileManager.default.homeDirectoryForCurrentUser.appending(path: "Library/Developer/CoreSimulator/Devices")
     ) {
         self.execute = execute
@@ -132,20 +132,25 @@ public struct Simctl: SimulatorBackend {
         _ = try run(["erase", udid])
     }
 
+    /// How long reading SpringBoard's status may take. It runs on every hand-out of a booted device, and a simulator that
+    /// says it is booted but no longer answers would otherwise hold `acquire` forever (D41). Generous, since `simctl`
+    /// calls take seconds when the machine is loaded, and a check that times out only skips the reboot.
+    static let springBoardStatusTimeout: TimeInterval = 10
+
     /// Reads SpringBoard's last exit status from the simulator's launchd: `launchctl list` prints `PID STATUS LABEL`,
     /// and the status stays 0 until the job has exited abnormally; launchd then restarts it with a new PID.
-    public func springBoardCrashed(udid: String) -> Bool {
-        guard let data = try? run(["spawn", udid, "launchctl", "list"]) else { return false }
-        return Self.springBoardCrashed(inLaunchctlList: String(decoding: data, as: UTF8.self))
+    public func springBoardExitStatus(udid: String) throws -> Int32? {
+        let data = try run(["spawn", udid, "launchctl", "list"], timeout: Self.springBoardStatusTimeout)
+        return Self.springBoardExitStatus(inLaunchctlList: String(decoding: data, as: UTF8.self))
     }
 
-    static func springBoardCrashed(inLaunchctlList listing: String) -> Bool {
+    static func springBoardExitStatus(inLaunchctlList listing: String) -> Int32? {
         for line in listing.split(separator: "\n") {
             let fields = line.split(separator: "\t")
             guard fields.count == 3, fields[2] == "com.apple.SpringBoard" else { continue }
-            return Int(fields[1]).map { $0 != 0 } ?? false
+            return Int32(fields[1])
         }
-        return false
+        return nil
     }
 
     public func delete(udid: String) throws {
@@ -175,8 +180,8 @@ public struct Simctl: SimulatorBackend {
         return output.trimmingCharacters(in: .whitespacesAndNewlines)
     }
 
-    private func run(_ arguments: [String]) throws -> Data {
-        let result = try execute(arguments)
+    private func run(_ arguments: [String], timeout: TimeInterval? = nil) throws -> Data {
+        let result = try execute(arguments, timeout)
         guard result.status == 0 else {
             // simctl's own errors come from CoreSimulator; an `xcrun: error:` means simctl never ran.
             if result.stderr.hasPrefix("xcrun: error:") { throw SimctlHouseError.xcodeRequired(stderr: result.stderr) }
@@ -193,22 +198,46 @@ enum Subprocess {
         var stderr: String
     }
 
-    static func run(_ executable: String, _ arguments: [String]) throws -> Result {
+    /// Runs the executable and waits for it to exit. A process still running after `timeout` is killed together with
+    /// whatever it started, and `run` throws `SimctlHouseError.timedOut`.
+    ///
+    /// Output goes to temporary files rather than pipes. A process can hand its stdout on, as `simctl spawn` does to the
+    /// one it starts in the simulator, and that one can hold a pipe open after the command was killed, so reading the
+    /// pipe to its end would never return. A file also never fills up and stalls a chatty process.
+    static func run(_ executable: String, _ arguments: [String], timeout: TimeInterval? = nil) throws -> Result {
         let process = Process()
         process.executableURL = URL(fileURLWithPath: executable)
         process.arguments = arguments
-        let out = Pipe()
-        let err = Pipe()
+        let out = try scratchFile()
+        let err = try scratchFile()
         process.standardOutput = out
         process.standardError = err
         process.standardInput = FileHandle.nullDevice
+        let exited = DispatchSemaphore(value: 0)
+        process.terminationHandler = { _ in exited.signal() }
         try process.run()
-        // Drain both pipes concurrently so a chatty stderr cannot deadlock a full stdout pipe.
-        let (outData, errData) = try concurrently(
-            { out.fileHandleForReading.readDataToEndOfFile() },
-            { err.fileHandleForReading.readDataToEndOfFile() }
-        )
-        process.waitUntilExit()
-        return Result(status: process.terminationStatus, stdout: outData, stderr: String(decoding: errData, as: UTF8.self))
+        if exited.wait(timeout: timeout.map { .now() + $0 } ?? .distantFuture) == .timedOut {
+            ProcessTable.signalTree(process.processIdentifier, SIGKILL)
+            exited.wait()
+            let command = ([(executable as NSString).lastPathComponent] + arguments).joined(separator: " ")
+            throw SimctlHouseError.timedOut(command: command, seconds: timeout!)
+        }
+        return Result(status: process.terminationStatus, stdout: try contents(of: out), stderr: String(decoding: try contents(of: err), as: UTF8.self))
+    }
+
+    /// An open file that is already gone from the temporary directory, so nothing is left behind however the run ends.
+    private static func scratchFile() throws -> FileHandle {
+        var path = Array((NSTemporaryDirectory() as NSString).appendingPathComponent("simctlhouse.XXXXXX").utf8CString)
+        // Close-on-exec, so a process started at the same time on another thread does not inherit it.
+        let descriptor = mkostemp(&path, O_CLOEXEC)
+        guard descriptor != -1 else { throw SimctlHouseError.io("Cannot create a temporary file: \(String(cString: strerror(errno)))") }
+        unlink(path)
+        return FileHandle(fileDescriptor: descriptor, closeOnDealloc: true)
+    }
+
+    /// The child wrote through a descriptor that shares this one's offset, so read from the start.
+    private static func contents(of file: FileHandle) throws -> Data {
+        try file.seek(toOffset: 0)
+        return try file.readToEnd() ?? Data()
     }
 }
