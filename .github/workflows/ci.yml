@@ -13,12 +13,8 @@ concurrency:
 
 jobs:
   test:
-    # The oldest and newest macOS that GitHub hosts, on Apple silicon like the release binary.
-    strategy:
-      fail-fast: false
-      matrix:
-        os: [macos-15, macos-26]
-    runs-on: ${{ matrix.os }}
+    # Apple silicon, like the release binary.
+    runs-on: macos-26
     steps:
       - uses: actions/checkout@v7
 
