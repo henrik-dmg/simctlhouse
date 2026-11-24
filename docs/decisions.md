@@ -449,3 +449,15 @@ A built-in simslim integration that runs whenever `simslim` is on `PATH` was rej
 Devices already in the pool when the hook is configured are not prepared; deleting the free ones (`delete --unused --for 0`) lets them come back prepared.
 Trade-off: the hook's time adds to the operation that needs it.
 simslim boots a new device once to verify it and shuts it down again, about the length of a first boot, so a `--skip-boot` acquire that creates a device, an `erase`, and a re-create in GC (paid by whichever command or the daemon collects) each take that much longer; the device's first boot for its agent is then a short second boot.
+
+## D41. `npx skills add` installs the skill from the repository
+
+The [skills CLI](https://github.com/vercel-labs/skills) (`npx skills add owner/repo`) installs Agent Skills from a repository into the many agents it knows, which reaches agents `skill install` does not detect.
+It already finds `skills/simctlhouse/SKILL.md`, but also the maintainers' `.agents/skills/release`, which it offered next to it.
+That skill is marked `metadata.internal: "true"`, which the CLI hides unless `INSTALL_INTERNAL_SKILLS=1` is set; the value is a string because the Agent Skills specification allows only string metadata values.
+The docs still pass `--skill simctlhouse`, so older tags that lack the marker install the same thing.
+
+It installs only the skill, so the skill tells agents to ask the user to install the binary when it is missing, rather than fall back to a simulator they pick.
+Its install is a copy in `~/.agents/skills/simctlhouse` with links to it from agents like Claude Code, and those links count as ours under D26: `skill install` replaces them and `simctlhouse uninstall` removes them, which is what someone removing simctlhouse wants.
+We did not teach `SkillInstaller` to recognise the skills CLI's installs; the docs say to use one of the two.
+Trade-off: unpinned, the skill comes from the default branch and can be ahead of the installed binary; the docs show pinning the release's tag, which `brew upgrade` does not move.
