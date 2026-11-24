@@ -26,7 +26,7 @@ Everything lives in `~/.simctlhouse` (override with `SIMCTLHOUSE_HOME`).
 
 ```json
 {
-  "version": 2,
+  "version": 3,
   "devices": [
     {
       "name": "amber-falcon",
@@ -58,6 +58,7 @@ Everything lives in `~/.simctlhouse` (override with `SIMCTLHOUSE_HOME`).
 
 A device being worked on also carries a `claim` (see Concurrency), and one being re-created after an expired lease a `replacedUDID` (see Garbage collection).
 A lease taken by `simctlhouse run` also carries an `owner`: the pid and start time of the `run` process (see run).
+A lease on a device that was rebooted first because its SpringBoard had crashed also carries `rebootedAfterSpringBoardCrash: true` (D41).
 The CoreSimulator state (`Booted` / `Shutdown`) is never stored; it is read live from `simctl list`.
 Dates are stored in whole seconds.
 
@@ -105,6 +106,7 @@ A hook that fails deletes the device and retires it as `failed`.
    Prefer a booted one, then the most recently used.
 4. If none matched, reserve a fresh name as `provisioning` with the lease attached, then `simctl create` it outside the lock, and run the prepare hook on it (D40).
 5. `simctl bootstatus <udid> -b` boots the device and waits until boot has fully completed.
+   A device that was already booted is first checked with `simctl spawn <udid> launchctl list`: if SpringBoard has exited abnormally since boot, it is shut down and booted again, and the lease records it (D41).
    If boot fails, the device is deleted rather than returned to the pool.
 6. Restart the lease's clock, found by lease id, so create and boot time do not count against it (D9).
    If the lease is gone (a boot that outlasted it, or a forced `delete`), fail with exit code 3.

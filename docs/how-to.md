@@ -305,6 +305,8 @@ Each lease shows when it was acquired and when it ended, the `--holder` label, t
 | `abandoned` | The process creating it crashed |
 | `runtimeRemoved` | Its iOS runtime was uninstalled, so it could not be re-created |
 
+A lease that started on a device rebooted first, because its SpringBoard had crashed (D41), shows that in a `NOTE` column (`rebootedAfterSpringBoardCrash` in `--json`).
+
 A device keeps its last 5 leases.
 A device that leaves the pool (deleted, vanished, or renamed after an expired lease) is kept for `history`, up to the 50 most recent.
 

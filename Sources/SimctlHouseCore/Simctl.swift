@@ -71,6 +71,9 @@ public protocol SimulatorBackend: Sendable {
     func existsOnDisk(udid: String) -> Bool
     /// Disk space the simulator takes, in bytes, or nil if it cannot be measured.
     func diskUsage(udid: String) -> Int64?
+    /// Whether the booted simulator's SpringBoard has exited abnormally since the simulator booted (D41).
+    /// False when it cannot tell, such as on a platform without SpringBoard.
+    func springBoardCrashed(udid: String) -> Bool
 }
 
 public struct Simctl: SimulatorBackend {
@@ -127,6 +130,22 @@ public struct Simctl: SimulatorBackend {
 
     public func erase(udid: String) throws {
         _ = try run(["erase", udid])
+    }
+
+    /// Reads SpringBoard's last exit status from the simulator's launchd: `launchctl list` prints `PID STATUS LABEL`,
+    /// and the status stays 0 until the job has exited abnormally; launchd then restarts it with a new PID.
+    public func springBoardCrashed(udid: String) -> Bool {
+        guard let data = try? run(["spawn", udid, "launchctl", "list"]) else { return false }
+        return Self.springBoardCrashed(inLaunchctlList: String(decoding: data, as: UTF8.self))
+    }
+
+    static func springBoardCrashed(inLaunchctlList listing: String) -> Bool {
+        for line in listing.split(separator: "\n") {
+            let fields = line.split(separator: "\t")
+            guard fields.count == 3, fields[2] == "com.apple.SpringBoard" else { continue }
+            return Int(fields[1]).map { $0 != 0 } ?? false
+        }
+        return false
     }
 
     public func delete(udid: String) throws {

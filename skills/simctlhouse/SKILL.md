@@ -28,6 +28,7 @@ A device you keep while you read code, edit, think or wait for the user sits idl
 
 Giving a device back costs almost nothing.
 A released device stays booted and keeps your installed app, and the next `run` or `acquire` gets a free booted device at once.
+If its SpringBoard crashed meanwhile, simctlhouse reboots it first, which takes about one boot.
 To get the same device back, name it: `simctlhouse run <name> -- ...` or `simctlhouse acquire <name> --holder "..."`.
 If another agent took it meanwhile (`acquire` exits with 5, `run` with 125), take any free one instead.
 

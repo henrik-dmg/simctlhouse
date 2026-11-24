@@ -63,6 +63,7 @@ A lease covers one piece of work, such as a test run or a round of screenshots, 
 An agent that keeps its device while it edits code or waits for you makes every other agent create and boot a new one.
 The skill has agents release before they go back to code, ask you something or end their turn, and run each test of an edit-and-test loop as its own `run`.
 Giving a device back costs almost nothing: it stays booted with the app installed, and `run <name>` or `acquire <name>` gets it back if it is still free.
+A booted device whose SpringBoard crashed is rebooted before the next agent gets it, so a crash in one agent's work never reaches the next.
 
 ### Who holds what
 

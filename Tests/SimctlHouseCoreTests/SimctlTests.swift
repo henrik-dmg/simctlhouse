@@ -67,6 +67,19 @@ import Testing
         #expect(calls.all == [["bootstatus", "X", "-b"]])
     }
 
+    @Test func readsWhetherSpringBoardCrashedFromLaunchctl() {
+        // Recorded on iOS 26.0 simulators: healthy, and after SpringBoard trapped (-5) on an appearance switch.
+        let healthy = "PID\tStatus\tLabel\n53399\t0\tcom.apple.backboardd\n8833\t0\tcom.apple.SpringBoard\n-\t0\tcom.apple.UIKit.OverlayUI\n"
+        let crashed = "PID\tStatus\tLabel\n53399\t0\tcom.apple.backboardd\n93082\t-5\tcom.apple.SpringBoard\n"
+        let (simctl, calls) = Simctl.replying(stdout: crashed)
+        #expect(simctl.springBoardCrashed(udid: "X"))
+        #expect(calls.all == [["spawn", "X", "launchctl", "list"]])
+        #expect(!Simctl.replying(stdout: healthy).0.springBoardCrashed(udid: "X"))
+        // No SpringBoard (another platform) or no answer: nothing to act on.
+        #expect(!Simctl.replying(stdout: "PID\tStatus\tLabel\n1\t0\tcom.apple.PineBoard\n").0.springBoardCrashed(udid: "X"))
+        #expect(!Simctl.replying(status: 149, stderr: "Unable to lookup in current state: Shutdown").0.springBoardCrashed(udid: "X"))
+    }
+
     @Test func shuttingDownAShutDownDeviceIsNoFailure() throws {
         let (simctl, calls) = Simctl.replying(status: 149, stderr: Self.alreadyShutDown)
         try simctl.shutdown(udid: "X")

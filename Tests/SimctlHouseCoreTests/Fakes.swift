@@ -17,12 +17,15 @@ final class FakeBackend: SimulatorBackend, @unchecked Sendable {
     private var unlisted: Set<String> = []
     private(set) var calls: [String] = []
     var failBoot = false
+    var failShutdown = false
     var failErase = false
     var failCreate = false
     /// `simctl list devices` fails, as while CoreSimulator is unavailable.
     var failListing = false
     /// Names of devices whose deletion fails.
     var failDelete: Set<String> = []
+    /// UDIDs of booted devices whose SpringBoard has crashed since they booted; a reboot clears it.
+    var crashedSpringBoards: Set<String> = []
     /// Run outside the backend's lock, to act as another process while a slow `simctl` call is in flight.
     var onCreate: (@Sendable () -> Void)?
     var onErase: (@Sendable () -> Void)?
@@ -89,9 +92,18 @@ final class FakeBackend: SimulatorBackend, @unchecked Sendable {
     }
 
     func shutdown(udid: String) throws {
-        lock.withLock {
+        try lock.withLock {
             calls.append("shutdown \(storage[udid]?.name ?? udid)")
+            if failShutdown { throw SimctlHouseError.simctlFailed(command: "shutdown", status: 1, stderr: "boom") }
             storage[udid]?.state = "Shutdown"
+            crashedSpringBoards.remove(udid)
+        }
+    }
+
+    func springBoardCrashed(udid: String) -> Bool {
+        lock.withLock {
+            calls.append("check SpringBoard \(storage[udid]?.name ?? udid)")
+            return crashedSpringBoards.contains(udid)
         }
     }
 

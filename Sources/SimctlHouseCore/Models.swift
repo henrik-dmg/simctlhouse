@@ -4,7 +4,7 @@ import Foundation
 public struct PoolState: Codable, Equatable, Sendable {
     /// Bump with every change to what `state.json` holds. A build refuses a newer file, so it never drops fields it does
     /// not know; new fields must be optional, so an older file still decodes.
-    public static let currentVersion = 2
+    public static let currentVersion = 3
     /// How many deleted, vanished or reclaimed devices `history` can still report on.
     public static let retiredLimit = 50
 
@@ -160,6 +160,8 @@ public struct Lease: Codable, Equatable, Sendable {
     /// The process the lease is bound to (`simctlhouse run`), if any. While it runs, the lease does not expire;
     /// once it is gone, GC reclaims the device, since nothing will release it any more (D33).
     public var owner: ProcessRef? = nil
+    /// True when the device was rebooted before this lease started, because its SpringBoard had crashed (D41).
+    public var rebootedAfterSpringBoardCrash: Bool? = nil
 }
 
 /// A running process, identified by its pid and start time, so a recycled pid is not mistaken for it.
@@ -206,6 +208,8 @@ public struct LeaseRecord: Codable, Equatable, Sendable {
     /// nil while the lease is active.
     public var endedAt: Date?
     public var outcome: EndReason?
+    /// True when the device was rebooted before this lease started, because its SpringBoard had crashed (D41).
+    public var rebootedAfterSpringBoardCrash: Bool?
 
     init(lease: Lease, udid: String?, endedAt: Date?, outcome: EndReason?) {
         self.leaseId = lease.id
@@ -216,6 +220,7 @@ public struct LeaseRecord: Codable, Equatable, Sendable {
         self.acquiredAt = lease.acquiredAt
         self.endedAt = endedAt
         self.outcome = outcome
+        self.rebootedAfterSpringBoardCrash = lease.rebootedAfterSpringBoardCrash
     }
 }
 

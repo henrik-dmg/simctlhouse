@@ -60,6 +60,50 @@ import Testing
         #expect(try h.pool.acquire(AcquireRequest(spec: DeviceSpec())).udid == a.udid)
     }
 
+    @Test func aBootedDeviceWhoseSpringBoardCrashedIsRebootedBeforeItIsHandedOut() throws {
+        let first = try h.pool.acquire(AcquireRequest(holder: "crasher"))
+        try h.pool.release(first.name)
+        h.backend.crashedSpringBoards.insert(first.udid!)
+
+        let again = try h.pool.acquire(AcquireRequest(holder: "next"))
+        #expect(again.udid == first.udid)
+        #expect(again.state == "Booted")
+        #expect(h.backend.callCount(prefix: "shutdown") == 1)
+        #expect(h.backend.callCount(prefix: "boot") == 2)
+        #expect(h.backend.crashedSpringBoards.isEmpty)
+        let leases = try #require(try h.pool.history(first.name).first).leases
+        #expect(leases.map(\.rebootedAfterSpringBoardCrash) == [nil, true])
+    }
+
+    @Test func aDeviceThatCannotBeShutDownForTheRebootIsStillHandedOut() throws {
+        let first = try h.pool.acquire(AcquireRequest())
+        try h.pool.release(first.name)
+        h.backend.crashedSpringBoards.insert(first.udid!)
+        h.backend.failShutdown = true
+
+        let again = try h.pool.acquire(AcquireRequest())
+        #expect(again.udid == first.udid)
+        let leases = try #require(try h.pool.history(first.name).first).leases
+        #expect(leases.map(\.rebootedAfterSpringBoardCrash) == [nil, nil])
+    }
+
+    @Test func aHealthyBootedDeviceIsHandedOutWithoutAReboot() throws {
+        let first = try h.pool.acquire(AcquireRequest())
+        try h.pool.release(first.name)
+        _ = try h.pool.acquire(AcquireRequest())
+        #expect(h.backend.callCount(prefix: "check SpringBoard") == 1)
+        #expect(h.backend.callCount(prefix: "shutdown") == 0)
+    }
+
+    @Test func aDeviceTakenWithoutBootIsNotChecked() throws {
+        let first = try h.pool.acquire(AcquireRequest())
+        try h.pool.release(first.name)
+        h.backend.crashedSpringBoards.insert(first.udid!)
+        _ = try h.pool.acquire(AcquireRequest(boot: false))
+        #expect(h.backend.callCount(prefix: "check SpringBoard") == 0)
+        #expect(h.backend.callCount(prefix: "shutdown") == 0)
+    }
+
     @Test func doesNotReuseDeviceOfADifferentSpec() throws {
         let phone = try h.pool.acquire(AcquireRequest(spec: DeviceSpec()))
         try h.pool.release(phone.name)

@@ -1263,7 +1263,9 @@ enum Format {
     }
 
     static func leaseTable(_ leases: [(DeviceHistory, LeaseRecord)], showDevice: Bool) -> String {
-        let header = (showDevice ? ["DEVICE"] : []) + ["ACQUIRED", "ENDED", "HELD", "OUTCOME", "HOLDER", "PID", "CWD"]
+        // Only a table that has a reboot to show gets the column.
+        let notes = leases.contains { $0.1.rebootedAfterSpringBoardCrash == true }
+        let header = (showDevice ? ["DEVICE"] : []) + ["ACQUIRED", "ENDED", "HELD", "OUTCOME", "HOLDER", "PID"] + (notes ? ["NOTE"] : []) + ["CWD"]
         let rows = leases.map { history, lease in
             (showDevice ? [history.name] : []) + [
                 timestamp(lease.acquiredAt),
@@ -1272,8 +1274,7 @@ enum Format {
                 lease.outcome?.rawValue ?? "active",
                 lease.holder ?? "-",
                 lease.pid.map(String.init) ?? "-",
-                path(lease.cwd),
-            ]
+            ] + (notes ? [lease.rebootedAfterSpringBoardCrash == true ? "rebooted: SpringBoard crashed" : "-"] : []) + [path(lease.cwd)]
         }
         return columns([header] + rows)
     }

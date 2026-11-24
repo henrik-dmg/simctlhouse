@@ -222,18 +222,33 @@ public struct Pool: Sendable {
             device = try provision(name: name, resolved: resolved, claim: claim, finalStatus: .leased)
         }
 
+        var rebooted = false
         if request.boot {
-            try boot(device, isBooted: isBooted)
+            rebooted = try boot(device, isBooted: isBooted)
         }
-        return try info(for: startLease(device), catalog: catalog)
+        return try info(for: startLease(device, rebootedAfterSpringBoardCrash: rebooted), catalog: catalog)
     }
 
-    /// Boots a freshly leased device and waits until it is ready.
-    private func boot(_ device: PoolDevice, isBooted: Bool) throws {
+    /// Boots a freshly leased device and waits until it is ready. A booted one whose SpringBoard has crashed since it
+    /// booted is rebooted first, since such a SpringBoard can stop applying system settings (D41); returns whether it was.
+    private func boot(_ device: PoolDevice, isBooted: Bool) throws -> Bool {
+        var rebooted = false
         do {
-            if !isBooted { log("Booting \(device.name)...") }
+            if isBooted, backend.springBoardCrashed(udid: device.udid!) {
+                log("\(device.name)'s SpringBoard has crashed since it booted; rebooting it...")
+                // A shutdown that fails is no reason to drop a device that is still usable: hand it out as it is (D41).
+                do {
+                    try backend.shutdown(udid: device.udid!)
+                    rebooted = true
+                } catch {
+                    log("Could not shut down \(device.name) (\(error)); handing it out as it is.")
+                }
+            } else if !isBooted {
+                log("Booting \(device.name)...")
+            }
             // Also called for booted devices: bootstatus returns immediately once boot has fully completed.
             try backend.bootAndWait(udid: device.udid!)
+            return rebooted
         } catch {
             // A device that cannot boot is useless to the next agent too; drop it instead of returning it to the pool.
             log("Boot of \(device.name) failed; removing it from the pool.")
@@ -244,13 +259,14 @@ public struct Pool: Sendable {
 
     /// Restarts the lease's clock now that the device is ready, so create and boot time do not count against it.
     /// A boot that outlasted the whole lease finds the device reclaimed, and fails the way a stale agent does.
-    private func startLease(_ device: PoolDevice) throws -> String {
+    private func startLease(_ device: PoolDevice, rebootedAfterSpringBoardCrash: Bool) throws -> String {
         try store.transaction { state in
             guard let index = state.devices.firstIndex(where: { $0.lease?.id == device.lease!.id }), state.devices[index].status == .leased else {
                 throw SimctlHouseError.deviceNotFound(device.name)
             }
             let now = now()
             state.devices[index].lease!.expiresAt = now.addingTimeInterval(config.leaseDuration)
+            if rebootedAfterSpringBoardCrash { state.devices[index].lease!.rebootedAfterSpringBoardCrash = true }
             state.devices[index].lastActivityAt = now
             return state.devices[index].name
         }

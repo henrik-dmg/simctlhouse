@@ -449,3 +449,19 @@ A built-in simslim integration that runs whenever `simslim` is on `PATH` was rej
 Devices already in the pool when the hook is configured are not prepared; deleting the free ones (`delete --unused --for 0`) lets them come back prepared.
 Trade-off: the hook's time adds to the operation that needs it.
 simslim boots a new device once to verify it and shuts it down again, about the length of a first boot, so a `--skip-boot` acquire that creates a device, an `erase`, and a re-create in GC (paid by whichever command or the daemon collects) each take that much longer; the device's first boot for its agent is then a short second boot.
+
+## D41. A booted device whose SpringBoard crashed is rebooted before it is handed out
+
+When `acquire` or `run` hands out a device that is already booted, it first reads SpringBoard's last exit status from the simulator's launchd (`simctl spawn <udid> launchctl list`).
+A non-zero status means SpringBoard has exited abnormally since the simulator booted; launchd restarted it, but the simulator is not what the next agent expects, so simctlhouse shuts it down and boots it again before the lease starts.
+The lease records it (`rebootedAfterSpringBoardCrash`), and `history` shows it, so a run that was handed a rebooted device can be told apart; `state.json` went to version 3 for it.
+
+The iOS 26.0 and 27.2 simulators' SpringBoard traps on some light/dark switches (`PBUIPosterViewController`, PaperBoardUI's poster assertion), stock or slimmed by simslim.
+The SpringBoard that launchd starts again then either ignores every later appearance switch or crashes on each one, until the simulator reboots.
+An app's UI tests that audit in dark then audited the light look and passed, on a device the previous agent had left that way: the pool turned one agent's crash into another agent's wrong result.
+
+The check runs at hand-out rather than at release, because `run` releases in one short transaction with no `simctl` calls (D33), and because SpringBoard can also crash while the device sits free.
+It costs one `simctl spawn` on every hand-out of a booted device, a fraction of a second; a reboot costs about one boot, and only when SpringBoard crashed.
+A device taken with `--skip-boot` is handed out as it is (D37), unchecked: its holder asked for no boot, typically to build.
+A crash in the middle of a lease is left to its holder, who may be relying on the device as it is.
+If the status cannot be read, the device is handed out as before: the check only ever adds a reboot.
